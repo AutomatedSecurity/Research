@@ -44,3 +44,5 @@ RQ1 (LLM vs traditional detection comparison) → RQ2 (LLM as aggregator/planner
 - No em dashes
 - Keep language simple and clear
 - Avoid unnecessary complexity in phrasing
+- Output all references/sources in LaTeX `.bib` format
+- Write draft sections in Overleaf/LaTeX-ready format for direct copy-paste
