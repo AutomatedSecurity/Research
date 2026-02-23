@@ -1,0 +1,227 @@
+{
+  "project_root": "/Users/matar/WORK/inkuis",
+  "engine": "codeql",
+  "entrypoints_count": 23,
+  "entrypoints": [
+    "server/api/analytics/index.ts",
+    "server/api/auth/login.ts",
+    "server/api/auth/logout.ts",
+    "server/api/auth/me.ts",
+    "server/api/auth/register.ts",
+    "server/api/chatbot/index.post.ts",
+    "server/api/events/[id]/attend.post.ts",
+    "server/api/events/[id].delete.ts",
+    "server/api/events/[id].get.ts",
+    "server/api/events/[id].put.ts",
+    "server/api/events/index.post.ts",
+    "server/api/events/index.ts",
+    "server/api/geocode.ts",
+    "server/api/health.ts",
+    "server/api/public/v1/events/[id].delete.ts",
+    "server/api/public/v1/events/[id].patch.ts",
+    "server/api/public/v1/events/index.get.ts",
+    "server/api/public/v1/events/index.post.ts",
+    "server/api/public/v1/validate-key.get.ts",
+    "server/api/upload/s3.post.ts",
+    "server/api/users/[id].ts",
+    "server/api/users/index.ts",
+    "server/api/users/me/events.ts"
+  ],
+  "modules_ranked": 29,
+  "top_n": 20,
+  "top_modules": [
+    {
+      "rank": 1,
+      "module": "server/models/User.ts",
+      "fan_in": 15,
+      "entrypoints_reaching": [
+        "server/api/analytics/index.ts",
+        "server/api/chatbot/index.post.ts",
+        "server/api/events/[id].delete.ts",
+        "server/api/events/[id].get.ts",
+        "server/api/events/[id].put.ts",
+        "server/api/events/[id]/attend.post.ts",
+        "server/api/events/index.post.ts",
+        "server/api/events/index.ts",
+        "server/api/public/v1/events/[id].delete.ts",
+        "server/api/public/v1/events/[id].patch.ts",
+        "server/api/public/v1/events/index.get.ts",
+        "server/api/public/v1/events/index.post.ts",
+        "server/api/users/[id].ts",
+        "server/api/users/index.ts",
+        "server/api/users/me/events.ts"
+      ]
+    },
+    {
+      "rank": 2,
+      "module": "server/models/Event.ts",
+      "fan_in": 13,
+      "entrypoints_reaching": [
+        "server/api/analytics/index.ts",
+        "server/api/chatbot/index.post.ts",
+        "server/api/events/[id].delete.ts",
+        "server/api/events/[id].get.ts",
+        "server/api/events/[id].put.ts",
+        "server/api/events/[id]/attend.post.ts",
+        "server/api/events/index.post.ts",
+        "server/api/events/index.ts",
+        "server/api/public/v1/events/[id].delete.ts",
+        "server/api/public/v1/events/[id].patch.ts",
+        "server/api/public/v1/events/index.get.ts",
+        "server/api/public/v1/events/index.post.ts",
+        "server/api/users/me/events.ts"
+      ]
+    },
+    {
+      "rank": 3,
+      "module": "server/utils/auth.ts",
+      "fan_in": 5,
+      "entrypoints_reaching": [
+        "server/api/events/[id].delete.ts",
+        "server/api/events/[id].put.ts",
+        "server/api/events/[id]/attend.post.ts",
+        "server/api/events/index.post.ts",
+        "server/api/upload/s3.post.ts"
+      ]
+    },
+    {
+      "rank": 4,
+      "module": "server/validation/eventSchemas.ts",
+      "fan_in": 3,
+      "entrypoints_reaching": [
+        "server/api/events/[id].put.ts",
+        "server/api/events/index.post.ts",
+        "server/api/public/v1/events/index.post.ts"
+      ]
+    },
+    {
+      "rank": 5,
+      "module": "utils/categoryHierarchy.ts",
+      "fan_in": 2,
+      "entrypoints_reaching": [
+        "server/api/chatbot/index.post.ts",
+        "server/api/events/index.ts"
+      ]
+    },
+    {
+      "rank": 6,
+      "module": "server/api/analytics/index.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/analytics/index.ts"
+      ]
+    },
+    {
+      "rank": 7,
+      "module": "server/api/auth/login.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/auth/login.ts"
+      ]
+    },
+    {
+      "rank": 8,
+      "module": "server/api/auth/logout.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/auth/logout.ts"
+      ]
+    },
+    {
+      "rank": 9,
+      "module": "server/api/auth/me.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/auth/me.ts"
+      ]
+    },
+    {
+      "rank": 10,
+      "module": "server/api/auth/register.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/auth/register.ts"
+      ]
+    },
+    {
+      "rank": 11,
+      "module": "server/api/chatbot/index.post.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/chatbot/index.post.ts"
+      ]
+    },
+    {
+      "rank": 12,
+      "module": "server/api/events/[id].delete.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/events/[id].delete.ts"
+      ]
+    },
+    {
+      "rank": 13,
+      "module": "server/api/events/[id].get.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/events/[id].get.ts"
+      ]
+    },
+    {
+      "rank": 14,
+      "module": "server/api/events/[id].put.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/events/[id].put.ts"
+      ]
+    },
+    {
+      "rank": 15,
+      "module": "server/api/events/[id]/attend.post.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/events/[id]/attend.post.ts"
+      ]
+    },
+    {
+      "rank": 16,
+      "module": "server/api/events/index.post.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/events/index.post.ts"
+      ]
+    },
+    {
+      "rank": 17,
+      "module": "server/api/events/index.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/events/index.ts"
+      ]
+    },
+    {
+      "rank": 18,
+      "module": "server/api/geocode.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/geocode.ts"
+      ]
+    },
+    {
+      "rank": 19,
+      "module": "server/api/health.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/health.ts"
+      ]
+    },
+    {
+      "rank": 20,
+      "module": "server/api/public/v1/events/[id].delete.ts",
+      "fan_in": 1,
+      "entrypoints_reaching": [
+        "server/api/public/v1/events/[id].delete.ts"
+      ]
+    }
+  ]
+}
