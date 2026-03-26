@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "tldraw-canvas": {
+      "source": "/Users/matar/.agents/skills/tldraw-canvas",
+      "sourceType": "local",
+      "computedHash": "c267703328d0d88e0daab2503a935f69562b5575873bd49cc38410da8ce55f42"
+    },
+    "tldraw-diagramming": {
+      "source": "/Users/matar/.agents/skills/tldraw-diagramming",
+      "sourceType": "local",
+      "computedHash": "9a4b14b4b9955c9b8b31cf12129ebea4305f9ec759e5a951797cbe8a1b094f8e"
+    }
+  }
+}

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
-SOURCE_EXTS = {".ts", ".js", ".tsx", ".jsx", ".py"}
+SOURCE_EXTS = {".ts", ".js", ".tsx", ".jsx", ".py", ".php", ".phtml"}
 SKIP_DIRS = {
     "node_modules",
     ".git",
@@ -46,6 +46,10 @@ TS_IMPORT_RE = re.compile(
 TS_REQUIRE_RE = re.compile(r"require\(\s*[\"']([^\"']+)[\"']\s*\)")
 PY_FROM_RE = re.compile(r"^\s*from\s+([\w\.]+)\s+import\s+", re.MULTILINE)
 PY_IMPORT_RE = re.compile(r"^\s*import\s+([\w\.]+)", re.MULTILINE)
+PHP_INCLUDE_RE = re.compile(
+    r"(?:include|include_once|require|require_once)\s*\(?\s*[\"']([^\"']+)[\"']\s*\)?",
+    re.IGNORECASE,
+)
 
 
 def should_skip(path: Path) -> bool:
@@ -83,6 +87,10 @@ def detect_entry_points(
         "api/",  # generic
         "routes/",  # express/flask-like folder names
         "app/api/",  # next.js style
+        "website/",  # common PHP app root
+        "public/",
+        "web/",
+        "src/",
     ]
     entries = []
     for rf in rel_files:
@@ -102,6 +110,62 @@ def detect_entry_points(
                 continue
             if any(m in txt for m in route_markers):
                 entries.append(f)
+
+    # Fallback: PHP route/controller hints
+    if not entries:
+        php_markers = (
+            "->get(",
+            "->post(",
+            "->put(",
+            "->delete(",
+            "Route::",
+            "addRoute(",
+            "$_GET",
+            "$_POST",
+        )
+        for f in files:
+            if f.suffix not in {".php", ".phtml"}:
+                continue
+            rel_path = f.relative_to(root).as_posix().lower()
+            if any(
+                part in rel_path
+                for part in (
+                    "/controller",
+                    "/controllers/",
+                    "/route",
+                    "/routes/",
+                    "/api/",
+                )
+            ):
+                entries.append(f)
+                continue
+            try:
+                txt = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if any(m in txt for m in php_markers):
+                entries.append(f)
+
+    # Last resort: pick likely bootstrap files by name/depth.
+    if not entries:
+        priority_names = {
+            "index",
+            "main",
+            "app",
+            "server",
+            "bootstrap",
+            "routes",
+            "api",
+        }
+        ranked = sorted(
+            files,
+            key=lambda f: (
+                0 if f.stem.lower() in priority_names else 1,
+                len(f.relative_to(root).parts),
+                f.relative_to(root).as_posix(),
+            ),
+        )
+        entries = ranked[: min(30, len(ranked))]
 
     return sorted(set(entries))
 
@@ -127,8 +191,15 @@ def resolve_module_path(spec: str, importer: Path, root: Path) -> Optional[Path]
     else:
         return None
 
-    suffix_candidates = ["", ".ts", ".tsx", ".js", ".jsx", ".py"]
-    index_candidates = ["index.ts", "index.tsx", "index.js", "index.jsx", "__init__.py"]
+    suffix_candidates = ["", ".ts", ".tsx", ".js", ".jsx", ".py", ".php", ".phtml"]
+    index_candidates = [
+        "index.ts",
+        "index.tsx",
+        "index.js",
+        "index.jsx",
+        "__init__.py",
+        "index.php",
+    ]
 
     for base in base_candidates:
         for sfx in suffix_candidates:
@@ -156,6 +227,8 @@ def extract_import_specs(file_path: Path) -> List[str]:
     elif file_path.suffix == ".py":
         specs.extend(PY_FROM_RE.findall(text))
         specs.extend(PY_IMPORT_RE.findall(text))
+    elif file_path.suffix in {".php", ".phtml"}:
+        specs.extend(PHP_INCLUDE_RE.findall(text))
 
     return specs
 
@@ -291,9 +364,12 @@ def write_outputs(
 def detect_project_language(files: List[Path]) -> str:
     js_like = sum(1 for f in files if f.suffix in {".ts", ".tsx", ".js", ".jsx"})
     py_like = sum(1 for f in files if f.suffix == ".py")
-    if js_like >= py_like:
+    php_like = sum(1 for f in files if f.suffix in {".php", ".phtml"})
+    if js_like >= py_like and js_like >= php_like:
         return "javascript"
-    return "python"
+    if py_like >= php_like:
+        return "python"
+    return "php"
 
 
 def ensure_codeql_available() -> str:
@@ -479,6 +555,15 @@ def main() -> int:
         raise SystemExit(
             "No entry points found. Pass --entry-prefix (e.g. --entry-prefix server/api) for your project layout."
         )
+
+    if args.engine == "codeql":
+        detected_language = detect_project_language(files)
+        if detected_language != "javascript":
+            print(
+                f"[warn] CodeQL engine currently supports JavaScript/TypeScript only. "
+                f"Detected language: {detected_language}. Falling back to heuristic engine."
+            )
+            args.engine = "heuristic"
 
     if args.engine == "codeql":
         db_dir = (

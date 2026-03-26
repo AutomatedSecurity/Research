@@ -1,1 +1,2 @@
 openai>=1.0
+pip install --upgrade 'openai>=1.0'

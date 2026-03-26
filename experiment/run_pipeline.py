@@ -5,7 +5,9 @@ Run experiment pipeline steps together.
 Current steps:
 1) fan-in ranking
 2) git history frequency ranking
-3) LLM reachability scan
+3) vulnerability signal scan
+4) LLM reachability scan
+5) human prioritization table
 """
 
 from __future__ import annotations
@@ -49,15 +51,39 @@ def parse_args() -> argparse.Namespace:
         help="Optional persistent CodeQL DB dir for step 1",
     )
     parser.add_argument(
+        "--vuln-top",
+        type=int,
+        default=25,
+        help="Top vulnerability findings in report",
+    )
+    parser.add_argument(
+        "--vuln-max-findings",
+        type=int,
+        default=300,
+        help="Max vulnerability findings retained",
+    )
+    parser.add_argument(
+        "--vuln-engine",
+        choices=["codeql", "bearer", "heuristic"],
+        default="codeql",
+        help="Vulnerability engine for step 3 (default: codeql, with fallback to bearer)",
+    )
+    parser.add_argument(
+        "--skip-vuln",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip step 3 vulnerability scan",
+    )
+    parser.add_argument(
         "--llm-provider",
         choices=["openai-compatible", "anthropic"],
         default="openai-compatible",
-        help="Provider for step 3 LLM scan (default: openai-compatible)",
+        help="Provider for step 4 LLM scan (default: openai-compatible)",
     )
     parser.add_argument(
         "--llm-model",
-        default="glm-4.6",
-        help="Model for step 3 LLM scan (default: glm-4.6)",
+        default="gpt-5.3-codex",
+        help="Model for step 4 LLM scan (default: gpt-5.3-codex)",
     )
     parser.add_argument(
         "--llm-auth-file",
@@ -73,43 +99,67 @@ def parse_args() -> argparse.Namespace:
         "--llm-max-files",
         type=int,
         default=80,
-        help="Step 3 max files (<=0 means all)",
+        help="Step 4 max files (<=0 means all)",
     )
     parser.add_argument(
         "--llm-max-chars",
         type=int,
         default=5000,
-        help="Step 3 max chars per file (<=0 means full file)",
+        help="Step 4 max chars per file (<=0 means full file)",
     )
     parser.add_argument(
         "--llm-max-tree",
         type=int,
         default=250,
-        help="Step 3 max tree entries (<=0 means all)",
+        help="Step 4 max tree entries (<=0 means all)",
     )
     parser.add_argument(
         "--llm-use-tools",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable LLM tool calls in step 3 (default: enabled)",
+        help="Enable LLM tool calls in step 4 (default: enabled)",
     )
     parser.add_argument(
         "--llm-max-tool-steps",
         type=int,
         default=18,
-        help="Max LLM tool-call iterations for step 3",
+        help="Max LLM tool-call iterations for step 4",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=0.0,
+        help="Step 4 LLM temperature (default: 0.0 for stable outputs)",
+    )
+    parser.add_argument(
+        "--llm-top-p",
+        type=float,
+        default=1.0,
+        help="Step 4 LLM top-p (default: 1.0)",
     )
     parser.add_argument(
         "--include-signals",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Include fan-in/git summaries in step 3 payload (default: enabled)",
+        help="Include fan-in/git/vulnerability summaries in step 4 payload (default: enabled)",
     )
     parser.add_argument(
         "--skip-llm",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Skip step 3 LLM scan",
+        help="Skip step 4 LLM scan",
+    )
+    parser.add_argument(
+        "--prioritize-top",
+        type=int,
+        default=25,
+        help="Top prioritized rows in step 5 output",
+    )
+    parser.add_argument(
+        "--skip-prioritize",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip step 5 human prioritization table",
     )
     parser.add_argument(
         "--output-dir",
@@ -136,7 +186,9 @@ def main() -> int:
 
     fanin_dir = run_dir / "fanin"
     git_dir = run_dir / "git_history"
+    vuln_dir = run_dir / "vulnerabilities"
     llm_dir = run_dir / "llm"
+    prioritization_dir = run_dir / "prioritization"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     fanin_cmd = [
@@ -167,6 +219,20 @@ def main() -> int:
         str(git_dir),
     ]
 
+    vuln_cmd = [
+        sys.executable,
+        str(here / "vulnerability_scan.py"),
+        str(project),
+        "--engine",
+        str(args.vuln_engine),
+        "--top",
+        str(args.vuln_top),
+        "--max-findings",
+        str(args.vuln_max_findings),
+        "--output-dir",
+        str(vuln_dir),
+    ]
+
     llm_cmd = [
         sys.executable,
         str(here / "llm_reachability_scan.py"),
@@ -183,10 +249,25 @@ def main() -> int:
         str(args.llm_max_chars),
         "--max-tree",
         str(args.llm_max_tree),
+        "--temperature",
+        str(args.llm_temperature),
+        "--top-p",
+        str(args.llm_top_p),
         "--max-tool-steps",
         str(args.llm_max_tool_steps),
         "--output-dir",
         str(llm_dir),
+    ]
+
+    prioritize_cmd = [
+        sys.executable,
+        str(here / "prioritize_targets.py"),
+        "--run-dir",
+        str(run_dir),
+        "--top",
+        str(args.prioritize_top),
+        "--output-dir",
+        str(prioritization_dir),
     ]
     if args.llm_auth_file:
         llm_cmd.extend(
@@ -210,9 +291,23 @@ def main() -> int:
     print("\nRunning Step 2: git history ranking")
     run_cmd(git_cmd)
 
+    if not args.skip_vuln:
+        print("\nRunning Step 3: vulnerability signal scan")
+        run_cmd(vuln_cmd)
+
     if not args.skip_llm:
-        print("\nRunning Step 3: LLM reachability scan")
+        print("\nRunning Step 4: LLM reachability scan")
         run_cmd(llm_cmd)
+
+    if not args.skip_prioritize:
+        if args.skip_llm or args.skip_vuln:
+            print(
+                "\nSkipping Step 5: human prioritization table "
+                "(requires both vulnerability and LLM steps)."
+            )
+        else:
+            print("\nRunning Step 5: human prioritization table")
+            run_cmd(prioritize_cmd)
 
     manifest = {
         "project": str(project),
@@ -231,12 +326,24 @@ def main() -> int:
             },
         },
     }
+    if not args.skip_vuln:
+        manifest["steps"]["vulnerabilities"] = {
+            "summary_json": str(vuln_dir / "summary.json"),
+            "csv": str(vuln_dir / "findings.csv"),
+            "report_md": str(vuln_dir / "report.md"),
+        }
     if not args.skip_llm:
         manifest["steps"]["llm"] = {
             "ranking_json": str(llm_dir / "llm_reachability_ranking.json"),
             "raw_response": str(llm_dir / "raw_response.txt"),
             "request_context": str(llm_dir / "request_context.json"),
             "model": args.llm_model,
+        }
+    if not args.skip_prioritize and not args.skip_llm and not args.skip_vuln:
+        manifest["steps"]["prioritization"] = {
+            "summary_json": str(prioritization_dir / "summary.json"),
+            "csv": str(prioritization_dir / "priorities.csv"),
+            "report_md": str(prioritization_dir / "report.md"),
         }
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"

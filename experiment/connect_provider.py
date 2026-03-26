@@ -21,19 +21,19 @@ from typing import Any, Dict
 DEFAULT_AUTH_FILE = Path(__file__).resolve().parent / "credentials.json"
 
 PROVIDERS: Dict[str, Dict[str, str]] = {
+    "openai": {
+        "label": "OpenAI API",
+        "provider": "openai-compatible",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-5.3-codex",
+        "api_key_env": "OPENAI_API_KEY",
+    },
     "zai": {
         "label": "Z.AI (OpenAI-compatible)",
         "provider": "openai-compatible",
         "base_url": "https://api.z.ai/api/coding/paas/v4",
         "model": "glm-4.6",
         "api_key_env": "ZAI_API_KEY",
-    },
-    "openai": {
-        "label": "OpenAI API",
-        "provider": "openai-compatible",
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4.1-mini",
-        "api_key_env": "OPENAI_API_KEY",
     },
     "anthropic": {
         "label": "Anthropic API",

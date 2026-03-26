@@ -7,9 +7,14 @@ Your task is to estimate **contextual code reachability importance** for a proje
 You will receive:
 - Project metadata and file tree summary
 - Representative source files
+- Optional scope hints:
+  - `analysis_scope` (`project` or `pr_only`)
+  - `candidate_files` (when scope is `pr_only`, only these files should be ranked)
+  - `pr_url` (traceability for PR-scoped analysis)
 - Optional structural signals:
   - `fanin_summary` (top structurally reachable modules)
   - `git_history_summary` (high-change/high-touch files)
+  - `vulnerability_summary` (static vulnerability findings and risky files)
 
 You may also have tool access for project exploration:
 - `list_files`
@@ -41,16 +46,24 @@ Important: this task is analysis-only.
    - Core business flows (login, listing, checkout, search, user profile, etc.).
 3. Produce a ranked list of code targets with confidence and concise reasoning.
 
-If `fanin_summary` and `git_history_summary` are provided, use them as explicit evidence.
+If `fanin_summary`, `git_history_summary`, and `vulnerability_summary` are provided, use them as explicit evidence.
 Do not ignore them.
 
+Prioritize targets that are both highly reachable and security-sensitive.
+If vulnerability signals are strong for a target, reflect that in score and rationale.
+
 Focus first on backend/API execution paths, then include frontend pages/components only when they are clearly high-traffic user surfaces.
+
+If `analysis_scope` is `pr_only`:
+- Use the full project context to reason about reachability.
+- Restrict `ranked_targets` to paths listed in `candidate_files` only.
+- Do not rank files outside `candidate_files`.
 
 When tools are available, prioritize this exploration order:
 1. List API, middleware, route, model, and service files.
 2. Read key entrypoint and auth/middleware files.
 3. Search for route definitions and cross-cutting utilities.
-4. Cross-check with fan-in and git-history signals.
+4. Cross-check with fan-in, git-history, and vulnerability signals.
 5. Produce final ranking JSON.
 
 ## Scoring Guidance
@@ -105,3 +118,5 @@ The score does not need to follow a strict formula, but your rationale must be c
 - Avoid hallucinating files or symbols not present in the provided context.
 - If uncertainty is high, lower confidence explicitly.
 - If no explicit fan-in or git-history inputs are provided, set `fanin_signal` and `git_activity_signal` to `none` unless you can infer weak/medium/high from project context alone.
+- If `vulnerability_summary` is provided, reference concrete findings in `why` and `global_observations` for affected targets.
+- If `analysis_scope` is `pr_only`, every `ranked_targets[].target.path` must be in `candidate_files`.
