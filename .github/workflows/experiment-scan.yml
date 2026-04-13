@@ -68,8 +68,7 @@ jobs:
 
       - name: Create .env for LLM scan
         run: |
-          cd experiment
-          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > .env
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > experiment/.env
 
       - name: Determine scan targets
         id: targets
@@ -86,8 +85,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd experiment
-
           # Engine fallback: codeql → bearer → heuristic
           FANIN_ENGINE="heuristic"
           VULN_ENGINE="heuristic"
@@ -102,9 +99,9 @@ jobs:
             echo "::warning::Neither CodeQL nor Bearer available — using heuristic fallback"
           fi
 
-          # Run the pipeline on the checked-out code
-          # --pr-url scopes LLM ranking to PR-changed files only
-          python3 run_pipeline.py "." \
+          # Run from repo root so PR file paths (relative to repo root) resolve correctly.
+          # PR files from gh api are like "experiment/run_pipeline.py" — relative to repo root.
+          python3 experiment/run_pipeline.py "experiment" \
             --fanin-engine "${FANIN_ENGINE}" \
             --vuln-engine "${VULN_ENGINE}" \
             --entry-prefix "server/api" \
@@ -116,15 +113,14 @@ jobs:
             --llm-max-chars 3000 \
             --pr-url "${{ steps.targets.outputs.pr_url }}" \
             --pr-context-files 30 \
-            --output-dir "runs/pr-${{ steps.targets.outputs.pr_number }}" \
-            2>&1 | tee pipeline-output.txt
+            --output-dir "experiment/runs/pr-${{ steps.targets.outputs.pr_number }}" \
+            2>&1 | tee experiment/pipeline-output.txt
 
-          echo "run_dir=runs/pr-${{ steps.targets.outputs.pr_number }}" >> $GITHUB_OUTPUT
+          echo "run_dir=experiment/runs/pr-${{ steps.targets.outputs.pr_number }}" >> $GITHUB_OUTPUT
 
       - name: Generate PR summary
         if: always() && steps.pipeline.outcome == 'success'
         run: |
-          cd experiment
           RUN_DIR="${{ steps.pipeline.outputs.run_dir }}"
 
           if [ ! -f "${RUN_DIR}/manifest.json" ]; then
@@ -192,7 +188,6 @@ jobs:
       - name: Post results as PR comment
         if: always() && steps.pipeline.outcome == 'success'
         run: |
-          cd experiment
           if [ -f pr-comment.md ]; then
             # Check if we already posted a comment (update instead of duplicate)
             EXISTING=$(gh pr view "${{ steps.targets.outputs.pr_number }}" \
@@ -212,7 +207,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: experiment-scan-pr-${{ github.event.pull_request.number }}
-          path: experiment/${{ steps.pipeline.outputs.run_dir }}/
+          path: ${{ steps.pipeline.outputs.run_dir }}/
           retention-days: 30
 
       - name: Upload full pipeline log
