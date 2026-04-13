@@ -1,0 +1,224 @@
+name: Experiment Pipeline Scan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiment/**'
+      - '.github/workflows/experiment-scan.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git_history_rank.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: pip install --upgrade 'openai>=1.0'
+
+      - name: Install CodeQL CLI
+        id: codeql-install
+        continue-on-error: true
+        run: |
+          CODEQL_VERSION=$(gh release view --repo github/codeql-cli-binaries --json tagName -q '.tagName')
+          echo "Installing CodeQL CLI ${CODEQL_VERSION}..."
+          gh release download "${CODEQL_VERSION}" \
+            --repo github/codeql-cli-binaries \
+            --pattern 'codeql-linux64.zip' \
+            --output /tmp/codeql.zip
+          unzip -q /tmp/codeql.zip -d /tmp/codeql
+          echo "/tmp/codeql/codeql" >> $GITHUB_PATH
+          /tmp/codeql/codeql version
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install Bearer CLI (fallback)
+        id: bearer-install
+        continue-on-error: true
+        run: |
+          BEARER_VERSION=$(gh release view --repo bearer/bearer --json tagName -q '.tagName')
+          echo "Installing Bearer CLI ${BEARER_VERSION}..."
+          gh release download "${BEARER_VERSION}" \
+            --repo bearer/bearer \
+            --pattern 'bearer_*_linux_amd64.tar.gz' \
+            --output /tmp/bearer.tar.gz
+          tar -xzf /tmp/bearer.tar.gz -C /tmp
+          chmod +x /tmp/bearer
+          echo "/tmp" >> $GITHUB_PATH
+          /tmp/bearer version
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create .env for LLM scan
+        run: |
+          cd experiment
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > .env
+
+      - name: Determine scan targets
+        id: targets
+        run: |
+          # Get changed files in this PR
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+
+          # Build the PR URL for --pr-url flag
+          echo "pr_url=${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Run full pipeline
+        id: pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd experiment
+
+          # Engine fallback: codeql → bearer → heuristic
+          FANIN_ENGINE="heuristic"
+          VULN_ENGINE="heuristic"
+          if command -v codeql &>/dev/null; then
+            FANIN_ENGINE="codeql"
+            VULN_ENGINE="codeql"
+            echo "::notice::CodeQL available — using codeql engine"
+          elif command -v bearer &>/dev/null; then
+            VULN_ENGINE="bearer"
+            echo "::notice::CodeQL unavailable, Bearer available — using bearer for vuln scan"
+          else
+            echo "::warning::Neither CodeQL nor Bearer available — using heuristic fallback"
+          fi
+
+          # Run the pipeline on the checked-out code
+          # --pr-url scopes LLM ranking to PR-changed files only
+          python3 run_pipeline.py "." \
+            --fanin-engine "${FANIN_ENGINE}" \
+            --vuln-engine "${VULN_ENGINE}" \
+            --entry-prefix "server/api" \
+            --entry-prefix "src/api" \
+            --entry-prefix "app/api" \
+            --top 20 \
+            --vuln-top 20 \
+            --llm-max-files 50 \
+            --llm-max-chars 3000 \
+            --pr-url "${{ steps.targets.outputs.pr_url }}" \
+            --pr-context-files 30 \
+            --output-dir "runs/pr-${{ steps.targets.outputs.pr_number }}" \
+            2>&1 | tee pipeline-output.txt
+
+          echo "run_dir=runs/pr-${{ steps.targets.outputs.pr_number }}" >> $GITHUB_OUTPUT
+
+      - name: Generate PR summary
+        if: always() && steps.pipeline.outcome == 'success'
+        run: |
+          cd experiment
+          RUN_DIR="${{ steps.pipeline.outputs.run_dir }}"
+
+          if [ ! -f "${RUN_DIR}/manifest.json" ]; then
+            echo "No manifest found — skipping summary"
+            exit 0
+          fi
+
+          # Build a markdown summary
+          {
+            echo "## Experiment Pipeline Results"
+            echo ""
+            echo "**PR**: #${{ steps.targets.outputs.pr_number }}"
+            echo "**Run**: \`${RUN_DIR}\`"
+            echo ""
+
+            # Fan-in summary
+            if [ -f "${RUN_DIR}/fanin/report.md" ]; then
+              echo "### Fan-in Ranking (top 5)"
+              echo '```'
+              head -20 "${RUN_DIR}/fanin/report.md" | tail -15
+              echo '```'
+              echo ""
+            fi
+
+            # Vulnerability summary
+            if [ -f "${RUN_DIR}/vulnerabilities/summary.json" ]; then
+              HIGH=$(python3 -c "import json; d=json.load(open('${RUN_DIR}/vulnerabilities/summary.json')); print(d.get('high',0))" 2>/dev/null || echo "?")
+              MED=$(python3 -c "import json; d=json.load(open('${RUN_DIR}/vulnerabilities/summary.json')); print(d.get('medium',0))" 2>/dev/null || echo "?")
+              LOW=$(python3 -c "import json; d=json.load(open('${RUN_DIR}/vulnerabilities/summary.json')); print(d.get('low',0))" 2>/dev/null || echo "?")
+              echo "### Vulnerability Scan"
+              echo "- **High**: ${HIGH}"
+              echo "- **Medium**: ${MED}"
+              echo "- **Low**: ${LOW}"
+              echo ""
+            fi
+
+            # LLM reachability top targets
+            if [ -f "${RUN_DIR}/llm/llm_reachability_ranking.json" ]; then
+              echo "### LLM Reachability (top 5)"
+              python3 -c "
+          import json
+          with open('${RUN_DIR}/llm/llm_reachability_ranking.json') as f:
+              data = json.load(f)
+          targets = data.get('ranked_targets', [])[:5]
+          for t in targets:
+              tgt = t.get('target', {})
+              print(f\"{t['rank']}. **{tgt.get('path','?')}** (score: {t['score']}, confidence: {t['confidence']}) — {t.get('why','')[:100]}\")
+          " 2>/dev/null || echo "(could not parse LLM ranking)"
+              echo ""
+            fi
+
+            # Prioritization summary
+            if [ -f "${RUN_DIR}/prioritization/report.md" ]; then
+              echo "### Combined Prioritization (top 10)"
+              echo '```'
+              head -30 "${RUN_DIR}/prioritization/report.md" | tail -20
+              echo '```'
+            fi
+
+          } > pr-comment.md
+
+          echo "--- Generated PR comment ---"
+          cat pr-comment.md
+
+      - name: Post results as PR comment
+        if: always() && steps.pipeline.outcome == 'success'
+        run: |
+          cd experiment
+          if [ -f pr-comment.md ]; then
+            # Check if we already posted a comment (update instead of duplicate)
+            EXISTING=$(gh pr view "${{ steps.targets.outputs.pr_number }}" \
+              --json comments -q '.comments[].id' 2>/dev/null | head -1 || true)
+
+            gh pr comment "${{ steps.targets.outputs.pr_number }}" \
+              --body-file pr-comment.md \
+              --edit-last 2>/dev/null || \
+            gh pr comment "${{ steps.targets.outputs.pr_number }}" \
+              --body-file pr-comment.md
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload pipeline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: experiment-scan-pr-${{ github.event.pull_request.number }}
+          path: experiment/${{ steps.pipeline.outputs.run_dir }}/
+          retention-days: 30
+
+      - name: Upload full pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-log-pr-${{ github.event.pull_request.number }}
+          path: experiment/pipeline-output.txt
+          retention-days: 14

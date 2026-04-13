@@ -162,6 +162,17 @@ def parse_args() -> argparse.Namespace:
         help="Skip step 5 human prioritization table",
     )
     parser.add_argument(
+        "--pr-url",
+        default=None,
+        help="GitHub PR URL — scopes LLM ranking to PR-changed files",
+    )
+    parser.add_argument(
+        "--pr-context-files",
+        type=int,
+        default=30,
+        help="Non-PR context files when --pr-url is set (default: 30)",
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Optional output run dir. Default: Research/experiment/runs/<project>_<timestamp>",
@@ -284,6 +295,10 @@ def main() -> int:
         llm_cmd.append("--include-signals")
     else:
         llm_cmd.append("--no-include-signals")
+
+    if args.pr_url:
+        llm_cmd.extend(["--pr-url", str(args.pr_url)])
+        llm_cmd.extend(["--pr-context-files", str(args.pr_context_files)])
 
     print("Running Step 1: fan-in ranking")
     run_cmd(fanin_cmd)
