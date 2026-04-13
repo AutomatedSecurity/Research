@@ -244,7 +244,7 @@ jobs:
           if fanin_summary.exists():
               fanin = json.loads(fanin_summary.read_text())
               engine = fanin.get("engine", "?")
-              n_modules = fanin.get("modules_count", fanin.get("ranked_count", 0))
+              n_modules = fanin.get("modules_ranked", 0)
               lines.append(f"<details><summary>Fan-in — {n_modules} module(s) ranked ({engine} engine)</summary>")
               lines.append("")
               for m in fanin.get("top_modules", fanin.get("ranked", []))[:20]:
@@ -259,7 +259,7 @@ jobs:
           git_summary = run_dir / "git_history" / "summary.json"
           if git_summary.exists():
               git = json.loads(git_summary.read_text())
-              n_files = git.get("files_count", git.get("ranked_count", 0))
+              n_files = git.get("files_ranked", 0)
               lines.append(f"<details><summary>Git history — {n_files} file(s) ranked</summary>")
               lines.append("")
               for f in git.get("top_files", git.get("ranked", []))[:20]:
@@ -271,10 +271,29 @@ jobs:
               lines.append("</details>")
               lines.append("")
 
+          # --- Download link ---
+          lines.append("")
+          lines.append("---")
+          lines.append(f"Download the full HTML report from the [workflow artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts).")
+
           output = "\n".join(lines)
           Path("pr-comment.md").write_text(output, encoding="utf-8")
           print(output)
           PYEOF
+
+      - name: Generate HTML report
+        if: always() && steps.pipeline.outcome == 'success'
+        run: |
+          RUN_DIR="${{ steps.pipeline.outputs.run_dir }}"
+          python3 experiment/generate_report.py "$RUN_DIR" "${RUN_DIR}/report.html"
+
+      - name: Upload HTML report
+        if: always() && steps.pipeline.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-report-pr-${{ github.event.pull_request.number }}
+          path: ${{ steps.pipeline.outputs.run_dir }}/report.html
+          retention-days: 30
 
       - name: Post PR comment
         if: always() && steps.pipeline.outcome == 'success'
