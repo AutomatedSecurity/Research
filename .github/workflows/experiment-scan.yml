@@ -1,0 +1,327 @@
+name: Experiment Pipeline Scan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiment/**'
+      - '.github/workflows/experiment-scan.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git_history_rank.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: pip install --upgrade 'openai>=1.0'
+
+      - name: Install CodeQL CLI
+        id: codeql-install
+        continue-on-error: true
+        run: |
+          CODEQL_VERSION=$(gh release view --repo github/codeql-cli-binaries --json tagName -q '.tagName')
+          echo "Installing CodeQL CLI ${CODEQL_VERSION}..."
+          gh release download "${CODEQL_VERSION}" \
+            --repo github/codeql-cli-binaries \
+            --pattern 'codeql-linux64.zip' \
+            --output /tmp/codeql.zip
+          unzip -q /tmp/codeql.zip -d /tmp/codeql-extract
+          # The zip contains a 'codeql' directory with the binary inside
+          CODEQL_BIN=$(find /tmp/codeql-extract -name codeql -type f | head -1)
+          if [ -z "${CODEQL_BIN}" ]; then
+            echo "::warning::Could not find codeql binary in archive"
+            exit 1
+          fi
+          CODEQL_DIR=$(dirname "${CODEQL_BIN}")
+          echo "${CODEQL_DIR}" >> $GITHUB_PATH
+          "${CODEQL_BIN}" version
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install Bearer CLI (fallback)
+        id: bearer-install
+        continue-on-error: true
+        run: |
+          BEARER_VERSION=$(gh release view --repo bearer/bearer --json tagName -q '.tagName')
+          echo "Installing Bearer CLI ${BEARER_VERSION}..."
+          gh release download "${BEARER_VERSION}" \
+            --repo bearer/bearer \
+            --pattern 'bearer_*_linux_amd64.tar.gz' \
+            --output /tmp/bearer.tar.gz
+          tar -xzf /tmp/bearer.tar.gz -C /tmp
+          chmod +x /tmp/bearer
+          echo "/tmp" >> $GITHUB_PATH
+          /tmp/bearer version
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create .env for LLM scan
+        run: |
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > experiment/.env
+
+      - name: Determine scan targets
+        id: targets
+        run: |
+          # Get changed files in this PR
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+
+          # Build the PR URL for --pr-url flag
+          echo "pr_url=${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Run full pipeline
+        id: pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Engine fallback: codeql → bearer → heuristic
+          FANIN_ENGINE="heuristic"
+          VULN_ENGINE="heuristic"
+          if command -v codeql &>/dev/null; then
+            FANIN_ENGINE="codeql"
+            VULN_ENGINE="codeql"
+            echo "::notice::CodeQL available — using codeql engine"
+          elif command -v bearer &>/dev/null; then
+            VULN_ENGINE="bearer"
+            echo "::notice::CodeQL unavailable, Bearer available — using bearer for vuln scan"
+          else
+            echo "::warning::Neither CodeQL nor Bearer available — using heuristic fallback"
+          fi
+
+          # Run from repo root so PR file paths (relative to repo root) resolve correctly.
+          # PR files from gh api are like "experiment/run_pipeline.py" — relative to repo root.
+          python3 experiment/run_pipeline.py "experiment" \
+            --fanin-engine "${FANIN_ENGINE}" \
+            --vuln-engine "${VULN_ENGINE}" \
+            --entry-prefix "server/api" \
+            --entry-prefix "src/api" \
+            --entry-prefix "app/api" \
+            --top 20 \
+            --vuln-top 20 \
+            --llm-max-files 50 \
+            --llm-max-chars 3000 \
+            --pr-url "${{ steps.targets.outputs.pr_url }}" \
+            --pr-context-files 30 \
+            --output-dir "experiment/runs/pr-${{ steps.targets.outputs.pr_number }}" \
+            2>&1 | tee experiment/pipeline-output.txt
+
+          echo "run_dir=experiment/runs/pr-${{ steps.targets.outputs.pr_number }}" >> $GITHUB_OUTPUT
+
+      - name: Generate and post PR summary
+        if: always() && steps.pipeline.outcome == 'success'
+        run: |
+          RUN_DIR="${{ steps.pipeline.outputs.run_dir }}"
+          PR_NUM="${{ steps.targets.outputs.pr_number }}"
+
+          if [ ! -f "${RUN_DIR}/manifest.json" ]; then
+            echo "No manifest found — skipping summary"
+            exit 0
+          fi
+
+          python3 - "$RUN_DIR" "$PR_NUM" <<'PYEOF'
+          import json, sys
+          from pathlib import Path
+
+          run_dir = Path(sys.argv[1])
+          pr_num = sys.argv[2]
+
+          lines = []
+          lines.append(f"# Scan Results — PR #{pr_num}")
+          lines.append("")
+
+          # --- Vulnerability scan ---
+          vuln_summary = run_dir / "vulnerabilities" / "summary.json"
+          vuln_findings_csv = run_dir / "vulnerabilities" / "findings.csv"
+          if vuln_summary.exists():
+              vuln = json.loads(vuln_summary.read_text())
+              engine = vuln.get("engine", "?")
+              n_findings = vuln.get("findings_count", 0)
+              lines.append(f"**Vulnerability scan** — {n_findings} finding(s) ({engine} engine)")
+              lines.append("")
+              if n_findings > 0:
+                  lines.append("| File | Line | Severity | CVSS | Rule |")
+                  lines.append("|---|---:|---|---:|---|")
+                  for f in vuln.get("top_findings", []):
+                      path = f.get("path", "?")
+                      line = f.get("line", "?")
+                      sev = f.get("severity", "?")
+                      cvss = f.get("cvss_base", "?")
+                      rule = f.get("rule_id", "?")
+                      desc = f.get("description", "").split("\n")[0][:120]
+                      lines.append(f"| `{path}` | {line} | {sev} | {cvss} | {rule} |")
+                  lines.append("")
+              else:
+                  lines.append("No findings.")
+                  lines.append("")
+
+          # --- LLM reachability ---
+          llm_ranking = run_dir / "llm" / "llm_reachability_ranking.json"
+          if llm_ranking.exists():
+              llm = json.loads(llm_ranking.read_text())
+              model = llm.get("method", {}).get("model", "?")
+              targets = llm.get("ranked_targets", [])
+              lines.append(f"**LLM reachability** — {len(targets)} target(s) ranked ({model})")
+              lines.append("")
+              if targets:
+                  lines.append("| Rank | Target | Score | Confidence | Why |")
+                  lines.append("|---:|---|---:|---|---|")
+                  for t in targets:
+                      tgt = t.get("target", {})
+                      path = tgt.get("path", "?")
+                      score = t.get("score", "?")
+                      conf = t.get("confidence", "?")
+                      why = t.get("why", "")[:150]
+                      lines.append(f"| {t['rank']} | `{path}` | {score} | {conf} | {why} |")
+                  lines.append("")
+
+              obs = llm.get("global_observations", [])
+              if obs:
+                  lines.append("<details><summary>LLM observations</summary>")
+                  lines.append("")
+                  for o in obs:
+                      lines.append(f"- {o}")
+                  lines.append("")
+                  lines.append("</details>")
+                  lines.append("")
+
+          # --- Prioritization ---
+          prio_summary = run_dir / "prioritization" / "summary.json"
+          if prio_summary.exists():
+              prio = json.loads(prio_summary.read_text())
+              rows = prio.get("top_priorities", [])
+              lines.append(f"**Combined prioritization** — {len(rows)} target(s)")
+              lines.append("")
+              if rows:
+                  lines.append("| Rank | Target | Tier | Priority | LLM | CVSS | Vulns | Primary rule |")
+                  lines.append("|---:|---|---|---:|---:|---:|---:|---|")
+                  for r in rows:
+                      path = r.get("path", "?")
+                      tier = r.get("priority_tier", "?")
+                      ps = r.get("priority_score", "?")
+                      llm_s = r.get("llm_score", "—")
+                      cvss = r.get("max_cvss", "—")
+                      n_vuln = r.get("vuln_findings", 0)
+                      rule = r.get("primary_vuln_rule", "—")
+                      lines.append(f"| {r['rank']} | `{path}` | {tier} | {ps} | {llm_s} | {cvss} | {n_vuln} | `{rule}` |")
+                  lines.append("")
+
+              prio_rows = prio.get("top_priorities", [])
+              for r in prio_rows:
+                  ev = r.get("vuln_evidence", [])
+                  if ev:
+                      path = r.get("path", "?")
+                      lines.append(f"<details><summary>Vulnerability evidence — <code>{path}</code></summary>")
+                      lines.append("")
+                      for e in ev:
+                          eline = e.get("line", "?")
+                          erule = e.get("rule_id", "?")
+                          edesc = e.get("description", "").split("\n")[0][:150]
+                          lines.append(f"- **L{eline}** `{erule}` — {edesc}")
+                      lines.append("")
+                      lines.append("</details>")
+                      lines.append("")
+
+          # --- Fan-in (collapsed) ---
+          fanin_summary = run_dir / "fanin" / "summary.json"
+          if fanin_summary.exists():
+              fanin = json.loads(fanin_summary.read_text())
+              engine = fanin.get("engine", "?")
+              n_modules = fanin.get("modules_ranked", 0)
+              lines.append(f"<details><summary>Fan-in — {n_modules} module(s) ranked ({engine} engine)</summary>")
+              lines.append("")
+              for m in fanin.get("top_modules", fanin.get("ranked", []))[:20]:
+                  mod = m.get("module", m.get("path", "?"))
+                  fi = m.get("fan_in", m.get("fanin", "?"))
+                  lines.append(f"- `{mod}` — fan-in: {fi}")
+              lines.append("")
+              lines.append("</details>")
+              lines.append("")
+
+          # --- Git history (collapsed) ---
+          git_summary = run_dir / "git_history" / "summary.json"
+          if git_summary.exists():
+              git = json.loads(git_summary.read_text())
+              n_files = git.get("files_ranked", 0)
+              lines.append(f"<details><summary>Git history — {n_files} file(s) ranked</summary>")
+              lines.append("")
+              for f in git.get("top_files", git.get("ranked", []))[:20]:
+                  fp = f.get("file", f.get("path", "?"))
+                  commits = f.get("commits_touched", f.get("commits", "?"))
+                  churn = f.get("churn", "?")
+                  lines.append(f"- `{fp}` — {commits} commits, {churn} churn")
+              lines.append("")
+              lines.append("</details>")
+              lines.append("")
+
+          # --- Download link ---
+          lines.append("")
+          lines.append("---")
+          lines.append(f"Download the full HTML report from the [workflow artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts).")
+
+          output = "\n".join(lines)
+          Path("pr-comment.md").write_text(output, encoding="utf-8")
+          print(output)
+          PYEOF
+
+      - name: Generate HTML report
+        if: always() && steps.pipeline.outcome == 'success'
+        run: |
+          RUN_DIR="${{ steps.pipeline.outputs.run_dir }}"
+          python3 experiment/generate_report.py "$RUN_DIR" "${RUN_DIR}/report.html"
+
+      - name: Upload HTML report
+        if: always() && steps.pipeline.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-report-pr-${{ github.event.pull_request.number }}
+          path: ${{ steps.pipeline.outputs.run_dir }}/report.html
+          retention-days: 30
+
+      - name: Post PR comment
+        if: always() && steps.pipeline.outcome == 'success'
+        run: |
+          if [ ! -f pr-comment.md ]; then
+            echo "No comment file — skipping"
+            exit 0
+          fi
+          gh pr comment "${{ steps.targets.outputs.pr_number }}" \
+            --body-file pr-comment.md \
+            --edit-last 2>/dev/null || \
+          gh pr comment "${{ steps.targets.outputs.pr_number }}" \
+            --body-file pr-comment.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload pipeline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: experiment-scan-pr-${{ github.event.pull_request.number }}
+          path: ${{ steps.pipeline.outputs.run_dir }}/
+          retention-days: 30
+
+      - name: Upload full pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-log-pr-${{ github.event.pull_request.number }}
+          path: experiment/pipeline-output.txt
+          retention-days: 14

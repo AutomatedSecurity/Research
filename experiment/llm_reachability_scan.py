@@ -737,9 +737,23 @@ def main() -> int:
         if args.pr_url:
             analysis_scope = "pr_only"
             pr_files_from_url = fetch_pr_files(str(args.pr_url))
-            pr_source_paths = {
-                p for p in pr_files_from_url if Path(p).suffix.lower() in SOURCE_EXTS
-            }
+
+            # PR file paths are repo-root-relative (e.g., "experiment/foo.py").
+            # Local files are relative to project_root. Detect the prefix to strip.
+            project_dir_name = project_root.name
+            pr_source_paths: set[str] = set()
+            for p in pr_files_from_url:
+                if Path(p).suffix.lower() not in SOURCE_EXTS:
+                    continue
+                # Strip project directory prefix if present
+                if "/" in p:
+                    prefix, rest = p.split("/", 1)
+                    if prefix == project_dir_name:
+                        pr_source_paths.add(rest)
+                        continue
+                # File is at repo root or outside project dir — use as-is
+                pr_source_paths.add(p)
+
             candidate_files = [
                 f
                 for f in all_files
