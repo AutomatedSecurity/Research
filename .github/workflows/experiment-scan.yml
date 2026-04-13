@@ -43,9 +43,16 @@ jobs:
             --repo github/codeql-cli-binaries \
             --pattern 'codeql-linux64.zip' \
             --output /tmp/codeql.zip
-          unzip -q /tmp/codeql.zip -d /tmp/codeql
-          echo "/tmp/codeql/codeql" >> $GITHUB_PATH
-          /tmp/codeql/codeql version
+          unzip -q /tmp/codeql.zip -d /tmp/codeql-extract
+          # The zip contains a 'codeql' directory with the binary inside
+          CODEQL_BIN=$(find /tmp/codeql-extract -name codeql -type f | head -1)
+          if [ -z "${CODEQL_BIN}" ]; then
+            echo "::warning::Could not find codeql binary in archive"
+            exit 1
+          fi
+          CODEQL_DIR=$(dirname "${CODEQL_BIN}")
+          echo "${CODEQL_DIR}" >> $GITHUB_PATH
+          "${CODEQL_BIN}" version
         env:
           GH_TOKEN: ${{ github.token }}
 
