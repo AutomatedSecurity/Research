@@ -125,87 +125,169 @@ jobs:
 
           echo "run_dir=experiment/runs/pr-${{ steps.targets.outputs.pr_number }}" >> $GITHUB_OUTPUT
 
-      - name: Generate PR summary
+      - name: Generate and post PR summary
         if: always() && steps.pipeline.outcome == 'success'
         run: |
           RUN_DIR="${{ steps.pipeline.outputs.run_dir }}"
+          PR_NUM="${{ steps.targets.outputs.pr_number }}"
 
           if [ ! -f "${RUN_DIR}/manifest.json" ]; then
             echo "No manifest found — skipping summary"
             exit 0
           fi
 
-          # Build a markdown summary
-          {
-            echo "## Experiment Pipeline Results"
-            echo ""
-            echo "**PR**: #${{ steps.targets.outputs.pr_number }}"
-            echo "**Run**: \`${RUN_DIR}\`"
-            echo ""
+          python3 - "$RUN_DIR" "$PR_NUM" <<'PYEOF'
+          import json, sys
+          from pathlib import Path
 
-            # Fan-in summary
-            if [ -f "${RUN_DIR}/fanin/report.md" ]; then
-              echo "### Fan-in Ranking (top 5)"
-              echo '```'
-              head -20 "${RUN_DIR}/fanin/report.md" | tail -15
-              echo '```'
-              echo ""
-            fi
+          run_dir = Path(sys.argv[1])
+          pr_num = sys.argv[2]
 
-            # Vulnerability summary
-            if [ -f "${RUN_DIR}/vulnerabilities/summary.json" ]; then
-              HIGH=$(python3 -c "import json; d=json.load(open('${RUN_DIR}/vulnerabilities/summary.json')); print(d.get('high',0))" 2>/dev/null || echo "?")
-              MED=$(python3 -c "import json; d=json.load(open('${RUN_DIR}/vulnerabilities/summary.json')); print(d.get('medium',0))" 2>/dev/null || echo "?")
-              LOW=$(python3 -c "import json; d=json.load(open('${RUN_DIR}/vulnerabilities/summary.json')); print(d.get('low',0))" 2>/dev/null || echo "?")
-              echo "### Vulnerability Scan"
-              echo "- **High**: ${HIGH}"
-              echo "- **Medium**: ${MED}"
-              echo "- **Low**: ${LOW}"
-              echo ""
-            fi
+          lines = []
+          lines.append(f"# Scan Results — PR #{pr_num}")
+          lines.append("")
 
-            # LLM reachability top targets
-            if [ -f "${RUN_DIR}/llm/llm_reachability_ranking.json" ]; then
-              echo "### LLM Reachability (top 5)"
-              python3 -c "
-          import json
-          with open('${RUN_DIR}/llm/llm_reachability_ranking.json') as f:
-              data = json.load(f)
-          targets = data.get('ranked_targets', [])[:5]
-          for t in targets:
-              tgt = t.get('target', {})
-              print(f\"{t['rank']}. **{tgt.get('path','?')}** (score: {t['score']}, confidence: {t['confidence']}) — {t.get('why','')[:100]}\")
-          " 2>/dev/null || echo "(could not parse LLM ranking)"
-              echo ""
-            fi
+          # --- Vulnerability scan ---
+          vuln_summary = run_dir / "vulnerabilities" / "summary.json"
+          vuln_findings_csv = run_dir / "vulnerabilities" / "findings.csv"
+          if vuln_summary.exists():
+              vuln = json.loads(vuln_summary.read_text())
+              engine = vuln.get("engine", "?")
+              n_findings = vuln.get("findings_count", 0)
+              lines.append(f"**Vulnerability scan** — {n_findings} finding(s) ({engine} engine)")
+              lines.append("")
+              if n_findings > 0:
+                  lines.append("| File | Line | Severity | CVSS | Rule |")
+                  lines.append("|---|---:|---|---:|---|")
+                  for f in vuln.get("top_findings", []):
+                      path = f.get("path", "?")
+                      line = f.get("line", "?")
+                      sev = f.get("severity", "?")
+                      cvss = f.get("cvss_base", "?")
+                      rule = f.get("rule_id", "?")
+                      desc = f.get("description", "").split("\n")[0][:120]
+                      lines.append(f"| `{path}` | {line} | {sev} | {cvss} | {rule} |")
+                  lines.append("")
+              else:
+                  lines.append("No findings.")
+                  lines.append("")
 
-            # Prioritization summary
-            if [ -f "${RUN_DIR}/prioritization/report.md" ]; then
-              echo "### Combined Prioritization (top 10)"
-              echo '```'
-              head -30 "${RUN_DIR}/prioritization/report.md" | tail -20
-              echo '```'
-            fi
+          # --- LLM reachability ---
+          llm_ranking = run_dir / "llm" / "llm_reachability_ranking.json"
+          if llm_ranking.exists():
+              llm = json.loads(llm_ranking.read_text())
+              model = llm.get("method", {}).get("model", "?")
+              targets = llm.get("ranked_targets", [])
+              lines.append(f"**LLM reachability** — {len(targets)} target(s) ranked ({model})")
+              lines.append("")
+              if targets:
+                  lines.append("| Rank | Target | Score | Confidence | Why |")
+                  lines.append("|---:|---|---:|---|---|")
+                  for t in targets:
+                      tgt = t.get("target", {})
+                      path = tgt.get("path", "?")
+                      score = t.get("score", "?")
+                      conf = t.get("confidence", "?")
+                      why = t.get("why", "")[:150]
+                      lines.append(f"| {t['rank']} | `{path}` | {score} | {conf} | {why} |")
+                  lines.append("")
 
-          } > pr-comment.md
+              obs = llm.get("global_observations", [])
+              if obs:
+                  lines.append("<details><summary>LLM observations</summary>")
+                  lines.append("")
+                  for o in obs:
+                      lines.append(f"- {o}")
+                  lines.append("")
+                  lines.append("</details>")
+                  lines.append("")
 
-          echo "--- Generated PR comment ---"
-          cat pr-comment.md
+          # --- Prioritization ---
+          prio_summary = run_dir / "prioritization" / "summary.json"
+          if prio_summary.exists():
+              prio = json.loads(prio_summary.read_text())
+              rows = prio.get("top_priorities", [])
+              lines.append(f"**Combined prioritization** — {len(rows)} target(s)")
+              lines.append("")
+              if rows:
+                  lines.append("| Rank | Target | Tier | Priority | LLM | CVSS | Vulns | Primary rule |")
+                  lines.append("|---:|---|---|---:|---:|---:|---:|---|")
+                  for r in rows:
+                      path = r.get("path", "?")
+                      tier = r.get("priority_tier", "?")
+                      ps = r.get("priority_score", "?")
+                      llm_s = r.get("llm_score", "—")
+                      cvss = r.get("max_cvss", "—")
+                      n_vuln = r.get("vuln_findings", 0)
+                      rule = r.get("primary_vuln_rule", "—")
+                      lines.append(f"| {r['rank']} | `{path}` | {tier} | {ps} | {llm_s} | {cvss} | {n_vuln} | `{rule}` |")
+                  lines.append("")
 
-      - name: Post results as PR comment
+              prio_rows = prio.get("top_priorities", [])
+              for r in prio_rows:
+                  ev = r.get("vuln_evidence", [])
+                  if ev:
+                      path = r.get("path", "?")
+                      lines.append(f"<details><summary>Vulnerability evidence — <code>{path}</code></summary>")
+                      lines.append("")
+                      for e in ev:
+                          eline = e.get("line", "?")
+                          erule = e.get("rule_id", "?")
+                          edesc = e.get("description", "").split("\n")[0][:150]
+                          lines.append(f"- **L{eline}** `{erule}` — {edesc}")
+                      lines.append("")
+                      lines.append("</details>")
+                      lines.append("")
+
+          # --- Fan-in (collapsed) ---
+          fanin_summary = run_dir / "fanin" / "summary.json"
+          if fanin_summary.exists():
+              fanin = json.loads(fanin_summary.read_text())
+              engine = fanin.get("engine", "?")
+              n_modules = fanin.get("modules_count", fanin.get("ranked_count", 0))
+              lines.append(f"<details><summary>Fan-in — {n_modules} module(s) ranked ({engine} engine)</summary>")
+              lines.append("")
+              for m in fanin.get("top_modules", fanin.get("ranked", []))[:20]:
+                  mod = m.get("module", m.get("path", "?"))
+                  fi = m.get("fan_in", m.get("fanin", "?"))
+                  lines.append(f"- `{mod}` — fan-in: {fi}")
+              lines.append("")
+              lines.append("</details>")
+              lines.append("")
+
+          # --- Git history (collapsed) ---
+          git_summary = run_dir / "git_history" / "summary.json"
+          if git_summary.exists():
+              git = json.loads(git_summary.read_text())
+              n_files = git.get("files_count", git.get("ranked_count", 0))
+              lines.append(f"<details><summary>Git history — {n_files} file(s) ranked</summary>")
+              lines.append("")
+              for f in git.get("top_files", git.get("ranked", []))[:20]:
+                  fp = f.get("file", f.get("path", "?"))
+                  commits = f.get("commits_touched", f.get("commits", "?"))
+                  churn = f.get("churn", "?")
+                  lines.append(f"- `{fp}` — {commits} commits, {churn} churn")
+              lines.append("")
+              lines.append("</details>")
+              lines.append("")
+
+          output = "\n".join(lines)
+          Path("pr-comment.md").write_text(output, encoding="utf-8")
+          print(output)
+          PYEOF
+
+      - name: Post PR comment
         if: always() && steps.pipeline.outcome == 'success'
         run: |
-          if [ -f pr-comment.md ]; then
-            # Check if we already posted a comment (update instead of duplicate)
-            EXISTING=$(gh pr view "${{ steps.targets.outputs.pr_number }}" \
-              --json comments -q '.comments[].id' 2>/dev/null | head -1 || true)
-
-            gh pr comment "${{ steps.targets.outputs.pr_number }}" \
-              --body-file pr-comment.md \
-              --edit-last 2>/dev/null || \
-            gh pr comment "${{ steps.targets.outputs.pr_number }}" \
-              --body-file pr-comment.md
+          if [ ! -f pr-comment.md ]; then
+            echo "No comment file — skipping"
+            exit 0
           fi
+          gh pr comment "${{ steps.targets.outputs.pr_number }}" \
+            --body-file pr-comment.md \
+            --edit-last 2>/dev/null || \
+          gh pr comment "${{ steps.targets.outputs.pr_number }}" \
+            --body-file pr-comment.md
         env:
           GH_TOKEN: ${{ github.token }}
 
