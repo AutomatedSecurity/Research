@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -21,10 +22,57 @@ from pathlib import Path
 from typing import List
 
 
+SOURCE_EXTS = {".ts", ".js", ".tsx", ".jsx", ".py", ".php", ".phtml", ".vue"}
+
+PR_URL_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)(?:/.*)?$"
+)
+
+
 def run_cmd(cmd: List[str]) -> None:
     proc = subprocess.run(cmd)
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
+
+
+def fetch_pr_files(pr_url: str) -> List[str]:
+    m = PR_URL_RE.match(pr_url.strip())
+    if not m:
+        raise SystemExit(
+            "Invalid --pr-url. Expected format: https://github.com/<owner>/<repo>/pull/<number>"
+        )
+
+    endpoint = f"repos/{m.group('owner')}/{m.group('repo')}/pulls/{m.group('number')}/files"
+    cmd = ["gh", "api", "--paginate", endpoint, "--jq", ".[].filename"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError as exc:
+        raise SystemExit("GitHub CLI (gh) is not installed. Install gh to use --pr-url.") from exc
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        raise SystemExit(
+            "Failed to fetch PR files via gh api. "
+            f"Ensure 'gh auth login' is configured. Details: {stderr or 'unknown error'}"
+        )
+
+    return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+
+
+def normalize_pr_source_paths(project: Path, pr_files: List[str]) -> List[str]:
+    project_dir_name = project.name
+    out: set[str] = set()
+    for raw in pr_files:
+        raw_norm = raw.replace("\\", "/").lstrip("./")
+        if Path(raw_norm).suffix.lower() not in SOURCE_EXTS:
+            continue
+        if "/" in raw_norm:
+            prefix, rest = raw_norm.split("/", 1)
+            if prefix == project_dir_name:
+                out.add(rest)
+                continue
+        out.add(raw_norm)
+    return sorted(out)
 
 
 def parse_args() -> argparse.Namespace:
@@ -202,6 +250,18 @@ def main() -> int:
     prioritization_dir = run_dir / "prioritization"
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    candidate_files_path = None
+    if args.pr_url:
+        pr_files = fetch_pr_files(str(args.pr_url))
+        candidate_paths = normalize_pr_source_paths(project, pr_files)
+        if not candidate_paths:
+            raise SystemExit(
+                "PR does not contain source files under the selected project path."
+            )
+        candidate_files_path = run_dir / "pr_candidate_files.txt"
+        candidate_files_path.write_text("\n".join(candidate_paths) + "\n", encoding="utf-8")
+        print(f"[info] PR source candidates: {len(candidate_paths)}")
+
     fanin_cmd = [
         sys.executable,
         str(here / "fanin_rank.py"),
@@ -219,6 +279,8 @@ def main() -> int:
         )
     for prefix in args.entry_prefix:
         fanin_cmd.extend(["--entry-prefix", prefix])
+    if candidate_files_path:
+        fanin_cmd.extend(["--candidate-files", str(candidate_files_path)])
 
     git_cmd = [
         sys.executable,
@@ -229,6 +291,8 @@ def main() -> int:
         "--output-dir",
         str(git_dir),
     ]
+    if candidate_files_path:
+        git_cmd.extend(["--candidate-files", str(candidate_files_path)])
 
     vuln_cmd = [
         sys.executable,
@@ -243,6 +307,8 @@ def main() -> int:
         "--output-dir",
         str(vuln_dir),
     ]
+    if candidate_files_path:
+        vuln_cmd.extend(["--candidate-files", str(candidate_files_path)])
 
     llm_cmd = [
         sys.executable,
@@ -280,6 +346,8 @@ def main() -> int:
         "--output-dir",
         str(prioritization_dir),
     ]
+    if candidate_files_path:
+        prioritize_cmd.extend(["--candidate-files", str(candidate_files_path)])
     if args.llm_auth_file:
         llm_cmd.extend(
             ["--auth-file", str(Path(args.llm_auth_file).expanduser().resolve())]
@@ -327,6 +395,8 @@ def main() -> int:
     manifest = {
         "project": str(project),
         "run_dir": str(run_dir),
+        "pr_url": args.pr_url,
+        "candidate_files": str(candidate_files_path) if candidate_files_path else None,
         "steps": {
             "fanin": {
                 "engine": args.fanin_engine,
