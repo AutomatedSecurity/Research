@@ -114,6 +114,7 @@ jobs:
             --entry-prefix "server/api" \
             --entry-prefix "src/api" \
             --entry-prefix "app/api" \
+            --pr-include-prefix "examples/WackoPicko" \
             --top 20 \
             --vuln-top 20 \
             --llm-max-files 50 \
