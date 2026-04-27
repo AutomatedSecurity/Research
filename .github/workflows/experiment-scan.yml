@@ -111,6 +111,7 @@ jobs:
           python3 experiment/run_pipeline.py "experiment" \
             --fanin-engine "${FANIN_ENGINE}" \
             --vuln-engine "${VULN_ENGINE}" \
+            --fallback-heuristic-on-empty \
             --entry-prefix "server/api" \
             --entry-prefix "src/api" \
             --entry-prefix "app/api" \
