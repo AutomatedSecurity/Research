@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'frontend/**'
+      - 'experiment/frontend/**'
       - 'experiment/**'
       - '.github/workflows/experiment-scan.yml'
 
@@ -105,7 +105,7 @@ jobs:
           fi
 
           # Run full-project scan on frontend for richer git-history and vulnerability context.
-          python3 experiment/run_pipeline.py "frontend" \
+          python3 experiment/run_pipeline.py "experiment/frontend" \
             --fanin-engine "${FANIN_ENGINE}" \
             --vuln-engine "${VULN_ENGINE}" \
             --fallback-heuristic-on-empty \
