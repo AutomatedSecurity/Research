@@ -82,6 +82,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--top", type=int, default=25, help="Top rows to include")
     parser.add_argument("--output-dir", default=None, help="Output directory")
+    parser.add_argument(
+        "--candidate-files",
+        default=None,
+        help="Optional newline-delimited allowlist of repo-relative files to include",
+    )
     return parser.parse_args()
 
 
@@ -93,6 +98,19 @@ def load_json(path: Path) -> Optional[dict]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def load_candidate_paths(path: Optional[str]) -> Optional[set[str]]:
+    if not path:
+        return None
+    candidate_file = Path(path).expanduser().resolve()
+    if not candidate_file.exists() or not candidate_file.is_file():
+        raise SystemExit(f"Candidate files list not found: {candidate_file}")
+    return {
+        line.strip().replace("\\", "/").lstrip("./")
+        for line in candidate_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -213,6 +231,8 @@ def main() -> int:
             "Missing vulnerability findings CSV. Run vulnerability step first or pass --vuln-findings."
         )
 
+    candidate_paths = load_candidate_paths(args.candidate_files)
+
     llm_data = load_json(llm_path)
     if not llm_data:
         raise SystemExit(f"Invalid LLM ranking JSON: {llm_path}")
@@ -258,6 +278,9 @@ def main() -> int:
             path = (row.get("path") or "").strip()
             if not path:
                 continue
+            normalized = path.replace("\\", "/").lstrip("./")
+            if candidate_paths is not None and normalized not in candidate_paths:
+                continue
             cvss_vector = vector_for_row(row)
             cvss = cvss31_base_score(cvss_vector)
             finding = {
@@ -274,9 +297,9 @@ def main() -> int:
                 "snippet": (row.get("snippet") or "").strip(),
             }
             item = vuln_by_path.setdefault(
-                path,
+                normalized,
                 {
-                    "path": path,
+                    "path": normalized,
                     "findings_count": 0,
                     "max_cvss": 0.0,
                     "max_cvss_vector": "",
@@ -315,8 +338,11 @@ def main() -> int:
         path = str(target.get("path") or "").strip()
         if not path:
             continue
-        llm_by_path[path] = {
-            "path": path,
+        normalized = path.replace("\\", "/").lstrip("./")
+        if candidate_paths is not None and normalized not in candidate_paths:
+            continue
+        llm_by_path[normalized] = {
+            "path": normalized,
             "target_type": str(target.get("target_type") or "module"),
             "llm_score": float(t.get("score") or 0),
             "llm_rank": int(t.get("rank") or 0),
