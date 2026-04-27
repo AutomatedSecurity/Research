@@ -131,6 +131,20 @@ def fetch_pr_files(pr_url: str) -> List[str]:
     return sorted(set(files))
 
 
+def load_candidate_paths(path: Optional[str]) -> Optional[List[str]]:
+    if not path:
+        return None
+    candidate_file = Path(path).expanduser().resolve()
+    if not candidate_file.exists() or not candidate_file.is_file():
+        raise SystemExit(f"Candidate files list not found: {candidate_file}")
+    rows = [
+        line.strip().replace("\\", "/").lstrip("./")
+        for line in candidate_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    return sorted(set(rows))
+
+
 def prepare_temp_clone_for_pr(
     pr_url: str,
 ) -> Tuple[Path, tempfile.TemporaryDirectory[str]]:
@@ -644,6 +658,11 @@ def parse_args() -> argparse.Namespace:
         help="GitHub PR URL. If set, rank PR files only while keeping project context.",
     )
     parser.add_argument(
+        "--candidate-files",
+        default=None,
+        help="Optional newline-delimited allowlist of project-relative candidate files",
+    )
+    parser.add_argument(
         "--pr-context-files",
         type=int,
         default=30,
@@ -734,9 +753,15 @@ def main() -> int:
         analysis_scope = "project"
         pr_files_from_url: Optional[List[str]] = None
 
+        candidate_paths_from_file = load_candidate_paths(args.candidate_files)
+
         if args.pr_url:
             analysis_scope = "pr_only"
-            pr_files_from_url = fetch_pr_files(str(args.pr_url))
+            pr_files_from_url = (
+                candidate_paths_from_file
+                if candidate_paths_from_file is not None
+                else fetch_pr_files(str(args.pr_url))
+            )
 
             # PR file paths are repo-root-relative (e.g., "experiment/foo.py").
             # Local files are relative to project_root. Detect the prefix to strip.
