@@ -64,6 +64,20 @@ def list_source_files(root: Path) -> List[Path]:
     return files
 
 
+def load_candidate_paths(path: Optional[str]) -> Optional[Set[str]]:
+    if not path:
+        return None
+    candidate_file = Path(path).expanduser().resolve()
+    if not candidate_file.exists() or not candidate_file.is_file():
+        raise SystemExit(f"Candidate files list not found: {candidate_file}")
+    rows = {
+        line.strip().replace("\\", "/").lstrip("./")
+        for line in candidate_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    return rows
+
+
 def detect_entry_points(
     root: Path, files: Iterable[Path], explicit_prefixes: List[str]
 ) -> List[Path]:
@@ -539,6 +553,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional persistent CodeQL database dir (only used in codeql engine)",
     )
+    parser.add_argument(
+        "--candidate-files",
+        default=None,
+        help="Optional newline-delimited allowlist of repo-relative files to rank",
+    )
     return parser.parse_args()
 
 
@@ -550,7 +569,20 @@ def main() -> int:
         raise SystemExit(f"Project path does not exist or is not a directory: {root}")
 
     files = list_source_files(root)
+    candidate_paths = load_candidate_paths(args.candidate_files)
+    if candidate_paths is not None:
+        files = [
+            f
+            for f in files
+            if f.relative_to(root).as_posix().replace("\\", "/") in candidate_paths
+        ]
+        if not files:
+            raise SystemExit(
+                "No candidate source files from --candidate-files are present under project root."
+            )
     entries = detect_entry_points(root, files, explicit_prefixes=args.entry_prefix)
+    if not entries and candidate_paths is not None:
+        entries = sorted(files)
     if not entries:
         raise SystemExit(
             "No entry points found. Pass --entry-prefix (e.g. --entry-prefix server/api) for your project layout."
