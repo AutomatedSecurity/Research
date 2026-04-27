@@ -75,6 +75,18 @@ def normalize_pr_source_paths(project: Path, pr_files: List[str]) -> List[str]:
     return sorted(out)
 
 
+def filter_candidate_paths_by_prefix(
+    candidate_paths: List[str], include_prefixes: List[str]
+) -> List[str]:
+    cleaned = [
+        p.strip().strip("/") for p in include_prefixes if p and p.strip().strip("/")
+    ]
+    if not cleaned:
+        return candidate_paths
+    allowed = tuple(f"{p}/" for p in cleaned)
+    return [p for p in candidate_paths if p in cleaned or p.startswith(allowed)]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run fan-in + git-history pipeline")
     parser.add_argument(
@@ -221,6 +233,12 @@ def parse_args() -> argparse.Namespace:
         help="Non-PR context files when --pr-url is set (default: 30)",
     )
     parser.add_argument(
+        "--pr-include-prefix",
+        action="append",
+        default=[],
+        help="Optional project-relative path prefix to keep when --pr-url is set. Can repeat.",
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Optional output run dir. Default: Research/experiment/runs/<project>_<timestamp>",
@@ -254,6 +272,9 @@ def main() -> int:
     if args.pr_url:
         pr_files = fetch_pr_files(str(args.pr_url))
         candidate_paths = normalize_pr_source_paths(project, pr_files)
+        candidate_paths = filter_candidate_paths_by_prefix(
+            candidate_paths, args.pr_include_prefix
+        )
         if not candidate_paths:
             raise SystemExit(
                 "PR does not contain source files under the selected project path."
@@ -367,6 +388,8 @@ def main() -> int:
     if args.pr_url:
         llm_cmd.extend(["--pr-url", str(args.pr_url)])
         llm_cmd.extend(["--pr-context-files", str(args.pr_context_files)])
+    if candidate_files_path:
+        llm_cmd.extend(["--candidate-files", str(candidate_files_path)])
 
     print("Running Step 1: fan-in ranking")
     run_cmd(fanin_cmd)
