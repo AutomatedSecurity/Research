@@ -129,6 +129,12 @@ def parse_args() -> argparse.Namespace:
         help="Vulnerability engine for step 3 (default: codeql, with fallback to bearer)",
     )
     parser.add_argument(
+        "--fallback-heuristic-on-empty",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="When vulnerability engine is bearer, rerun heuristic if no findings",
+    )
+    parser.add_argument(
         "--skip-vuln",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -328,6 +334,8 @@ def main() -> int:
         "--output-dir",
         str(vuln_dir),
     ]
+    if args.fallback_heuristic_on_empty:
+        vuln_cmd.append("--fallback-heuristic-on-empty")
     if candidate_files_path:
         vuln_cmd.extend(["--candidate-files", str(candidate_files_path)])
 
