@@ -64,6 +64,28 @@ def should_include(rel_path: str) -> bool:
     return True
 
 
+def normalize_rel_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def load_exclude_prefixes(prefixes: List[str]) -> Set[str]:
+    return {
+        normalize_rel_path(prefix).rstrip("/")
+        for prefix in prefixes
+        if normalize_rel_path(prefix).rstrip("/")
+    }
+
+
+def is_excluded_rel(rel_path: str, exclude_prefixes: Set[str]) -> bool:
+    if not exclude_prefixes:
+        return False
+    normalized = normalize_rel_path(rel_path)
+    return any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in exclude_prefixes
+    )
+
+
 def ensure_git_repo(root: Path) -> None:
     proc = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
@@ -88,7 +110,11 @@ def load_candidate_paths(path: Optional[str]) -> Optional[Set[str]]:
     return rows
 
 
-def collect_history(root: Path, candidate_paths: Optional[Set[str]] = None) -> Dict[str, FileStats]:
+def collect_history(
+    root: Path,
+    candidate_paths: Optional[Set[str]] = None,
+    exclude_prefixes: Optional[Set[str]] = None,
+) -> Dict[str, FileStats]:
     cmd = [
         "git",
         "-C",
@@ -135,6 +161,8 @@ def collect_history(root: Path, candidate_paths: Optional[Set[str]] = None) -> D
         add_s, del_s, path_s = cols[0], cols[1], cols[2]
         normalized = path_s.replace("\\", "/").lstrip("./")
         if not current_hash or not should_include(normalized):
+            continue
+        if exclude_prefixes and is_excluded_rel(normalized, exclude_prefixes):
             continue
         if candidate_paths is not None and normalized not in candidate_paths:
             continue
@@ -260,6 +288,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional newline-delimited allowlist of repo-relative files to rank",
     )
+    parser.add_argument(
+        "--exclude-prefix",
+        action="append",
+        default=[],
+        help="Optional project-relative path prefix to exclude from analysis. Can repeat.",
+    )
     return parser.parse_args()
 
 
@@ -271,7 +305,10 @@ def main() -> int:
 
     ensure_git_repo(root)
     candidate_paths = load_candidate_paths(args.candidate_files)
-    stats = collect_history(root, candidate_paths=candidate_paths)
+    exclude_prefixes = load_exclude_prefixes(args.exclude_prefix)
+    stats = collect_history(
+        root, candidate_paths=candidate_paths, exclude_prefixes=exclude_prefixes
+    )
 
     script_dir = Path(__file__).resolve().parent
     if args.output_dir:

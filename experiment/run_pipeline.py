@@ -13,6 +13,7 @@ Current steps:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import subprocess
@@ -85,6 +86,69 @@ def filter_candidate_paths_by_prefix(
         return candidate_paths
     allowed = tuple(f"{p}/" for p in cleaned)
     return [p for p in candidate_paths if p in cleaned or p.startswith(allowed)]
+
+
+def normalize_rel_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def build_effective_exclude_prefixes(
+    project: Path, tool_dir: Path, run_dir: Path, user_prefixes: List[str]
+) -> List[str]:
+    prefixes: List[str] = []
+    seen: set[str] = set()
+
+    def add(prefix: str) -> None:
+        normalized = normalize_rel_path(prefix).rstrip("/")
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        prefixes.append(normalized)
+
+    for prefix in user_prefixes:
+        add(prefix)
+
+    try:
+        tool_rel = tool_dir.relative_to(project).as_posix()
+    except ValueError:
+        tool_rel = ""
+    if tool_rel:
+        add(tool_rel.split("/", 1)[0])
+
+    try:
+        run_rel = run_dir.relative_to(project).as_posix()
+    except ValueError:
+        run_rel = ""
+    if run_rel:
+        add(run_rel)
+
+    return prefixes
+
+
+def build_vulnerability_candidate_paths(findings_csv: Path) -> List[str]:
+    if not findings_csv.exists() or not findings_csv.is_file():
+        return []
+
+    rows: dict[str, tuple[float, int]] = {}
+    with findings_csv.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            raw_path = str(row.get("path") or "").strip()
+            normalized = normalize_rel_path(raw_path)
+            if not normalized:
+                continue
+            if Path(normalized).suffix.lower() not in SOURCE_EXTS:
+                continue
+            try:
+                cvss = float(row.get("cvss_base") or 0.0)
+            except (TypeError, ValueError):
+                cvss = 0.0
+            count = rows.get(normalized, (0.0, 0))[1] + 1
+            max_cvss = max(rows.get(normalized, (0.0, 0))[0], cvss)
+            rows[normalized] = (max_cvss, count)
+
+    ranked = sorted(rows.items(), key=lambda item: (-item[1][0], -item[1][1], item[0]))
+    return [path for path, _ in ranked]
 
 
 def parse_args() -> argparse.Namespace:
@@ -245,6 +309,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional project-relative path prefix to keep when --pr-url is set. Can repeat.",
     )
     parser.add_argument(
+        "--exclude-prefix",
+        action="append",
+        default=[],
+        help="Optional project-relative path prefix to exclude from all scan steps. Can repeat.",
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Optional output run dir. Default: Research/experiment/runs/<project>_<timestamp>",
@@ -273,6 +343,13 @@ def main() -> int:
     llm_dir = run_dir / "llm"
     prioritization_dir = run_dir / "prioritization"
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    effective_exclude_prefixes = build_effective_exclude_prefixes(
+        project=project,
+        tool_dir=here,
+        run_dir=run_dir,
+        user_prefixes=args.exclude_prefix,
+    )
 
     candidate_files_path = None
     if args.pr_url:
@@ -308,6 +385,8 @@ def main() -> int:
         fanin_cmd.extend(["--entry-prefix", prefix])
     if candidate_files_path:
         fanin_cmd.extend(["--candidate-files", str(candidate_files_path)])
+    for prefix in effective_exclude_prefixes:
+        fanin_cmd.extend(["--exclude-prefix", prefix])
 
     git_cmd = [
         sys.executable,
@@ -320,6 +399,8 @@ def main() -> int:
     ]
     if candidate_files_path:
         git_cmd.extend(["--candidate-files", str(candidate_files_path)])
+    for prefix in effective_exclude_prefixes:
+        git_cmd.extend(["--exclude-prefix", prefix])
 
     vuln_cmd = [
         sys.executable,
@@ -338,6 +419,8 @@ def main() -> int:
         vuln_cmd.append("--fallback-heuristic-on-empty")
     if candidate_files_path:
         vuln_cmd.extend(["--candidate-files", str(candidate_files_path)])
+    for prefix in effective_exclude_prefixes:
+        vuln_cmd.extend(["--exclude-prefix", prefix])
 
     llm_cmd = [
         sys.executable,
@@ -398,6 +481,8 @@ def main() -> int:
         llm_cmd.extend(["--pr-context-files", str(args.pr_context_files)])
     if candidate_files_path:
         llm_cmd.extend(["--candidate-files", str(candidate_files_path)])
+    for prefix in effective_exclude_prefixes:
+        llm_cmd.extend(["--exclude-prefix", prefix])
 
     print("Running Step 1: fan-in ranking")
     run_cmd(fanin_cmd)
@@ -408,6 +493,40 @@ def main() -> int:
     if not args.skip_vuln:
         print("\nRunning Step 3: vulnerability signal scan")
         run_cmd(vuln_cmd)
+
+        vuln_candidate_paths = build_vulnerability_candidate_paths(vuln_dir / "findings.csv")
+        if vuln_candidate_paths:
+            candidate_files_path = run_dir / "vulnerability_candidate_files.txt"
+            candidate_files_path.write_text(
+                "\n".join(vuln_candidate_paths) + "\n", encoding="utf-8"
+            )
+            print(f"[info] Vulnerability-backed LLM candidates: {len(vuln_candidate_paths)}")
+
+            llm_cmd_no_candidates = [
+                arg
+                for i, arg in enumerate(llm_cmd)
+                if not (
+                    arg == "--candidate-files"
+                    or (i > 0 and llm_cmd[i - 1] == "--candidate-files")
+                )
+            ]
+            llm_cmd = llm_cmd_no_candidates + [
+                "--candidate-files",
+                str(candidate_files_path),
+            ]
+
+            prioritize_cmd_no_candidates = [
+                arg
+                for i, arg in enumerate(prioritize_cmd)
+                if not (
+                    arg == "--candidate-files"
+                    or (i > 0 and prioritize_cmd[i - 1] == "--candidate-files")
+                )
+            ]
+            prioritize_cmd = prioritize_cmd_no_candidates + [
+                "--candidate-files",
+                str(candidate_files_path),
+            ]
 
     if not args.skip_llm:
         print("\nRunning Step 4: LLM reachability scan")
@@ -428,6 +547,7 @@ def main() -> int:
         "run_dir": str(run_dir),
         "pr_url": args.pr_url,
         "candidate_files": str(candidate_files_path) if candidate_files_path else None,
+        "exclude_prefixes": effective_exclude_prefixes,
         "steps": {
             "fanin": {
                 "engine": args.fanin_engine,
