@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riskrank"
+version = "0.1.0"
+description = "Installable CLI for risk-based reachability and vulnerability prioritization"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openai>=1.0",
+]
+
+[project.scripts]
+riskrank = "riskrank_cli.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = [
+  "connect_provider",
+  "fanin_rank",
+  "generate_report",
+  "git_history_rank",
+  "llm_reachability_scan",
+  "prioritize_targets",
+  "run_pipeline",
+  "vulnerability_scan",
+]
+
+[tool.setuptools.packages.find]
+include = ["riskrank_cli", "evaluation"]
+
+[tool.setuptools.package-data]
+riskrank_cli = ["PROMPT.md"]
+evaluation = ["benchmark_repos.json"]

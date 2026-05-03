@@ -21,6 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from riskrank_cli.paths import (
+    default_credentials_file,
+    default_env_file,
+    default_prompt_file,
+)
+
 try:
     from openai import OpenAI
 except ImportError as exc:
@@ -33,7 +39,7 @@ SOURCE_EXTS = {".ts", ".js", ".tsx", ".jsx", ".py", ".vue", ".php", ".phtml"}
 DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_FALLBACK_CHAT_MODEL = "gpt-4.1-mini"
-DEFAULT_AUTH_FILE = Path(__file__).resolve().parent / "credentials.json"
+DEFAULT_AUTH_FILE = default_credentials_file()
 
 SKIP_DIRS = {
     ".git",
@@ -601,7 +607,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt-file",
-        default=str(Path(__file__).resolve().parent / "PROMPT.md"),
+        default=str(default_prompt_file()),
         help="Prompt instruction markdown file",
     )
     parser.add_argument(
@@ -637,7 +643,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--env-file",
-        default=str(Path(__file__).resolve().parent / ".env"),
+        default=str(default_env_file()),
         help="Optional .env file to load before reading API key",
     )
     parser.add_argument(
