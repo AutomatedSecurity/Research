@@ -56,12 +56,52 @@ def should_skip(path: Path) -> bool:
     return any(part in SKIP_DIRS for part in path.parts)
 
 
-def list_source_files(root: Path) -> List[Path]:
+def normalize_rel_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def load_exclude_prefixes(prefixes: List[str]) -> Set[str]:
+    return {
+        normalize_rel_path(prefix).rstrip("/")
+        for prefix in prefixes
+        if normalize_rel_path(prefix).rstrip("/")
+    }
+
+
+def is_excluded_rel(rel_path: str, exclude_prefixes: Set[str]) -> bool:
+    if not exclude_prefixes:
+        return False
+    normalized = normalize_rel_path(rel_path)
+    return any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in exclude_prefixes
+    )
+
+
+def list_source_files(root: Path, exclude_prefixes: Optional[Set[str]] = None) -> List[Path]:
     files: List[Path] = []
     for p in root.rglob("*"):
-        if p.is_file() and p.suffix in SOURCE_EXTS and not should_skip(p):
-            files.append(p)
+        if not (p.is_file() and p.suffix in SOURCE_EXTS and not should_skip(p)):
+            continue
+        rel = p.relative_to(root).as_posix()
+        if exclude_prefixes and is_excluded_rel(rel, exclude_prefixes):
+            continue
+        files.append(p)
     return files
+
+
+def load_candidate_paths(path: Optional[str]) -> Optional[Set[str]]:
+    if not path:
+        return None
+    candidate_file = Path(path).expanduser().resolve()
+    if not candidate_file.exists() or not candidate_file.is_file():
+        raise SystemExit(f"Candidate files list not found: {candidate_file}")
+    rows = {
+        line.strip().replace("\\", "/").lstrip("./")
+        for line in candidate_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    return rows
 
 
 def detect_entry_points(
@@ -539,6 +579,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional persistent CodeQL database dir (only used in codeql engine)",
     )
+    parser.add_argument(
+        "--candidate-files",
+        default=None,
+        help="Optional newline-delimited allowlist of repo-relative files to rank",
+    )
+    parser.add_argument(
+        "--exclude-prefix",
+        action="append",
+        default=[],
+        help="Optional project-relative path prefix to exclude from analysis. Can repeat.",
+    )
     return parser.parse_args()
 
 
@@ -549,8 +600,22 @@ def main() -> int:
     if not root.exists() or not root.is_dir():
         raise SystemExit(f"Project path does not exist or is not a directory: {root}")
 
-    files = list_source_files(root)
+    exclude_prefixes = load_exclude_prefixes(args.exclude_prefix)
+    files = list_source_files(root, exclude_prefixes=exclude_prefixes)
+    candidate_paths = load_candidate_paths(args.candidate_files)
+    if candidate_paths is not None:
+        files = [
+            f
+            for f in files
+            if f.relative_to(root).as_posix().replace("\\", "/") in candidate_paths
+        ]
+        if not files:
+            raise SystemExit(
+                "No candidate source files from --candidate-files are present under project root."
+            )
     entries = detect_entry_points(root, files, explicit_prefixes=args.entry_prefix)
+    if not entries and candidate_paths is not None:
+        entries = sorted(files)
     if not entries:
         raise SystemExit(
             "No entry points found. Pass --entry-prefix (e.g. --entry-prefix server/api) for your project layout."

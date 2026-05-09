@@ -17,8 +17,10 @@ from getpass import getpass
 from pathlib import Path
 from typing import Any, Dict
 
+from riskrank_cli.paths import default_credentials_file
 
-DEFAULT_AUTH_FILE = Path(__file__).resolve().parent / "credentials.json"
+
+DEFAULT_AUTH_FILE = default_credentials_file()
 
 PROVIDERS: Dict[str, Dict[str, str]] = {
     "openai": {
@@ -182,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--auth-file",
         default=str(DEFAULT_AUTH_FILE),
-        help="Credentials JSON path (default: ./credentials.json)",
+        help=f"Credentials JSON path (default: {DEFAULT_AUTH_FILE})",
     )
 
     sub = parser.add_subparsers(dest="command", required=True)

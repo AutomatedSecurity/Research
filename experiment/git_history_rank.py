@@ -21,7 +21,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 
 SOURCE_EXTS = {".ts", ".js", ".tsx", ".jsx", ".py"}
@@ -64,6 +64,28 @@ def should_include(rel_path: str) -> bool:
     return True
 
 
+def normalize_rel_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def load_exclude_prefixes(prefixes: List[str]) -> Set[str]:
+    return {
+        normalize_rel_path(prefix).rstrip("/")
+        for prefix in prefixes
+        if normalize_rel_path(prefix).rstrip("/")
+    }
+
+
+def is_excluded_rel(rel_path: str, exclude_prefixes: Set[str]) -> bool:
+    if not exclude_prefixes:
+        return False
+    normalized = normalize_rel_path(rel_path)
+    return any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in exclude_prefixes
+    )
+
+
 def ensure_git_repo(root: Path) -> None:
     proc = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
@@ -74,7 +96,25 @@ def ensure_git_repo(root: Path) -> None:
         raise SystemExit(f"Not a git repository: {root}")
 
 
-def collect_history(root: Path) -> Dict[str, FileStats]:
+def load_candidate_paths(path: Optional[str]) -> Optional[Set[str]]:
+    if not path:
+        return None
+    candidate_file = Path(path).expanduser().resolve()
+    if not candidate_file.exists() or not candidate_file.is_file():
+        raise SystemExit(f"Candidate files list not found: {candidate_file}")
+    rows = {
+        line.strip().replace("\\", "/").lstrip("./")
+        for line in candidate_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    return rows
+
+
+def collect_history(
+    root: Path,
+    candidate_paths: Optional[Set[str]] = None,
+    exclude_prefixes: Optional[Set[str]] = None,
+) -> Dict[str, FileStats]:
     cmd = [
         "git",
         "-C",
@@ -119,7 +159,12 @@ def collect_history(root: Path) -> Dict[str, FileStats]:
             continue
 
         add_s, del_s, path_s = cols[0], cols[1], cols[2]
-        if not current_hash or not should_include(path_s):
+        normalized = path_s.replace("\\", "/").lstrip("./")
+        if not current_hash or not should_include(normalized):
+            continue
+        if exclude_prefixes and is_excluded_rel(normalized, exclude_prefixes):
+            continue
+        if candidate_paths is not None and normalized not in candidate_paths:
             continue
 
         try:
@@ -128,7 +173,7 @@ def collect_history(root: Path) -> Dict[str, FileStats]:
         except ValueError:
             added, deleted = 0, 0
 
-        fs = stats[path_s]
+        fs = stats[normalized]
         fs.commits.add(current_hash)
         fs.total_added += added
         fs.total_deleted += deleted
@@ -238,6 +283,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional output directory. Default: Research/experiment/git_history_outputs/<project>_<timestamp>",
     )
+    parser.add_argument(
+        "--candidate-files",
+        default=None,
+        help="Optional newline-delimited allowlist of repo-relative files to rank",
+    )
+    parser.add_argument(
+        "--exclude-prefix",
+        action="append",
+        default=[],
+        help="Optional project-relative path prefix to exclude from analysis. Can repeat.",
+    )
     return parser.parse_args()
 
 
@@ -248,7 +304,11 @@ def main() -> int:
         raise SystemExit(f"Project path does not exist or is not a directory: {root}")
 
     ensure_git_repo(root)
-    stats = collect_history(root)
+    candidate_paths = load_candidate_paths(args.candidate_files)
+    exclude_prefixes = load_exclude_prefixes(args.exclude_prefix)
+    stats = collect_history(
+        root, candidate_paths=candidate_paths, exclude_prefixes=exclude_prefixes
+    )
 
     script_dir = Path(__file__).resolve().parent
     if args.output_dir:

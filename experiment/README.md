@@ -1,237 +1,119 @@
-# Experiment Pipeline (PoC)
+# RiskRank
 
-This folder contains a simple pipeline for the thesis prioritization prototype:
+Risk-based code prioritization for security review.
 
-1. Fan-in ranking (static reachability proxy)
-2. Git history frequency table
-3. Vulnerability signal scan (static regex heuristics)
-4. LLM-based semantic analysis
-5. Human prioritization table (vuln + LLM reachability)
-6. LLM orchestrator final prioritization report (later)
+RiskRank combines:
 
-## Run Full Pipeline (Step 1 + 2 + 3 + 4 + 5)
+1. Fan-in ranking
+2. Git history frequency ranking
+3. Vulnerability signal scanning
+4. LLM-based reachability analysis
+5. Final prioritization
 
-Script: `run_pipeline.py`
+## Start Here
 
-```bash
-python3 run_pipeline.py /path/to/project --entry-prefix server/api --top 25
-```
-
-For Inkuis:
+Install locally:
 
 ```bash
-python3 run_pipeline.py /Users/matar/WORK/inkuis --entry-prefix server/api --top 20
+pip install -e .
 ```
 
-Or using Make:
+Main CLI:
 
 ```bash
-make test PROJECT_PATH=/Users/matar/WORK/inkuis ENTRY_PREFIX=server/api TOP=20
+riskrank --help
 ```
 
-Connect a provider profile first (interactive):
+Run the full pipeline:
 
 ```bash
-make connect
+riskrank run /path/to/project --entry-prefix server/api --top 25
 ```
 
-This creates a single run folder under `runs/` with:
-
-- `fanin/` outputs
-- `git_history/` outputs
-- `vulnerabilities/` outputs
-- `llm/` outputs
-- `prioritization/` outputs
-- `manifest.json` pointing to all generated artifacts
-
-## Step 5: Human prioritization table
-
-Script: `prioritize_targets.py`
+Generate an HTML report for a run:
 
 ```bash
-python3 prioritize_targets.py --run-dir /path/to/runs/<run_id>
+riskrank report /path/to/runs/<run_id>
 ```
 
-This step builds a ranked table that combines:
+## Repo Layout
 
-- Vulnerability severity (CVSS-estimated from scanner findings)
-- LLM reachability score
-
-Outputs:
-
-- `prioritization/report.md`
-- `prioritization/priorities.csv`
-- `prioritization/summary.json`
-
-## Step 3: Vulnerability signal scan
-
-Script: `vulnerability_scan.py`
-
-```bash
-python3 vulnerability_scan.py /path/to/project
+```text
+.
+├── README.md                  # Main entrypoint and quickstart
+├── pyproject.toml             # Package metadata and CLI entrypoint
+├── riskrank_cli/              # Installed CLI package
+├── run_pipeline.py            # Orchestrates the end-to-end workflow
+├── fanin_rank.py              # Step 1: structural fan-in analysis
+├── git_history_rank.py        # Step 2: git activity analysis
+├── vulnerability_scan.py      # Step 3: vulnerability baseline
+├── llm_reachability_scan.py   # Step 4: LLM reachability ranking
+├── prioritize_targets.py      # Step 5: final score fusion
+├── generate_report.py         # HTML report generator
+├── connect_provider.py        # Saved auth profiles for LLM providers
+├── evaluation/                # Multi-repo benchmark and metrics tooling
+├── examples/                  # Example vulnerable apps / fixtures
+├── runs/                      # Saved pipeline outputs and reports
+├── frontend/                  # Optional Nuxt frontend
+├── docs/                      # Architecture notes and diagrams
+└── bin/                       # External helper binaries like bearer
 ```
 
-Notes:
+More detail: `docs/REPO_STRUCTURE.md`
 
-- Default engine is `codeql`; when CodeQL is unavailable for the project language, it falls back to `bearer`.
-- You can force Bearer with `--engine bearer`.
-- Outputs: `findings.csv`, `summary.json`, `report.md`, `baseline_ranking.json`.
+## Command Map
 
-## Step 3 (manual): LLM reachability scan
+- `riskrank run` - full pipeline
+- `riskrank fanin` - fan-in ranking only
+- `riskrank git-history` - git history ranking only
+- `riskrank vuln-scan` - vulnerability scan only
+- `riskrank llm-scan` - LLM reachability scan only
+- `riskrank prioritize` - combine LLM and vulnerability signals
+- `riskrank report` - generate an HTML report from a run directory
+- `riskrank connect` - manage saved provider credentials
+- `riskrank benchmark` - run the benchmark suite
+- `riskrank metrics` - compute metrics for a benchmark suite
 
-Script: `llm_reachability_scan.py`
+Pass `--help` after any subcommand to inspect its flags.
 
-```bash
-python3 llm_reachability_scan.py /path/to/project
-```
+## Important Folders
 
-Optional provider flag (currently implemented engine path is `openai-compatible`):
+`riskrank_cli/`
+- The packaged CLI layer.
+- This is what exposes the `riskrank` command.
 
-```bash
-python3 llm_reachability_scan.py /path/to/project --provider openai-compatible --model gpt-5.3-codex
-```
+Top-level Python modules
+- These are the actual pipeline stages.
+- They are kept at the top level right now because the CLI dispatches directly into them.
 
-Rank only files changed in a GitHub PR while still giving the LLM broader project context:
+`runs/`
+- Generated per-project outputs.
+- Each run typically contains `fanin/`, `git_history/`, `vulnerabilities/`, `llm/`, `prioritization/`, and `report.html`.
 
-```bash
-python3 llm_reachability_scan.py /path/to/project --pr-url https://github.com/<owner>/<repo>/pull/<number>
-```
+`evaluation/`
+- Batch experiments across multiple repositories.
+- Use this for benchmark suites and metrics, not normal single-project usage.
 
-Optional PR controls:
+`examples/`
+- Example targets you can use for demos or testing.
 
-- `--max-files`: limit PR candidate files considered for ranking.
-- `--pr-context-files`: include additional non-PR files as context only (default: 30).
+`frontend/`
+- Optional UI work.
+- Not required for the Python CLI.
 
-Notes for PR mode:
+## External Tools
 
-- Requires `gh` CLI and an authenticated session (`gh auth login`).
-- Final ranking output is restricted to PR files only.
-- The LLM still receives broader codebase context (selected context files + optional signals).
+Some modes depend on external tools:
 
-### Connect-style credential profiles
+- `git` for git-history analysis
+- `gh` for PR-scoped LLM analysis
+- `codeql` for CodeQL-backed fan-in and vulnerability scanning
+- `bearer` for the bearer fallback engine
 
-Script: `connect_provider.py`
+The CLI still works without all of them installed, but some modes fall back or become unavailable.
 
-```bash
-python3 connect_provider.py login
-python3 connect_provider.py list
-```
+## Notes
 
-Use a saved profile in the scan:
-
-```bash
-python3 llm_reachability_scan.py /path/to/project --auth-profile openai-default
-```
-
-Notes:
-
-- Profiles are stored in `credentials.json` by default.
-- This is API-key based (stable for automation).
-- Browser OAuth with consumer subscription sessions is intentionally not implemented.
-
-Include fan-in + git-history context from a pipeline run:
-
-```bash
-python3 llm_reachability_scan.py /path/to/project --run-dir /path/to/runs/<run_id>
-```
-
-To send maximum context (all files + full contents + full selected tree):
-
-```bash
-python3 llm_reachability_scan.py /path/to/project --max-files 0 --max-chars 0 --max-tree 0
-```
-
-Disable tool calls if needed:
-
-```bash
-python3 llm_reachability_scan.py /path/to/project --no-use-tools
-```
-
-Notes:
-
-- The script auto-loads `Research/experiment/.env` by default.
-- Set `OPENAI_API_KEY` in `.env`.
-- Default model is `gpt-5.3-codex`.
-- Default base URL is `https://api.openai.com/v1`.
-- Default output path is `runs/<project>/llm`.
-- Fan-in, git-history, and vulnerability signals are injected when `--run-dir` is provided (or direct summary paths are passed).
-- Context selection is prioritized for API/middleware/model/service/auth files.
-- Tool-calls are enabled by default (`list_files`, `read_file`, `search_code`).
-- For more repeatable outputs across runs, use `--temperature 0 --top-p 1`.
-
-To disable fan-in/git context injection:
-
-```bash
-python3 llm_reachability_scan.py /path/to/project --no-include-signals
-```
-
-## Step 1: Fan-in ranking
-
-Script: `fanin_rank.py`
-
-Default engine is `codeql`.
-
-### Run
-
-```bash
-python3 fanin_rank.py /path/to/project --entry-prefix server/api --top 25
-```
-
-For Inkuis:
-
-```bash
-python3 fanin_rank.py /Users/matar/WORK/inkuis --entry-prefix server/api --top 20
-```
-
-Use heuristic fallback if CodeQL is unavailable:
-
-```bash
-python3 fanin_rank.py /path/to/project --engine heuristic --entry-prefix server/api --top 25
-```
-
-### Output
-
-Creates a timestamped folder under `fanin_outputs/`:
-
-- `report.md` - quick top-table summary
-- `summary.json` - structured output for later orchestration
-- `fanin_ranking.csv` - full ranking table
-
-## Step 2: Git history frequency ranking
-
-Script: `git_history_rank.py`
-
-### Run
-
-```bash
-python3 git_history_rank.py /path/to/project --top 25
-```
-
-For Inkuis:
-
-```bash
-python3 git_history_rank.py /Users/matar/WORK/inkuis --top 20
-```
-
-### Output
-
-Creates a timestamped folder under `git_history_outputs/`:
-
-- `report.md` - quick top-table summary
-- `summary.json` - structured output for later orchestration
-- `git_history_frequency.csv` - full file ranking
-
-### Notes
-
-- Frequency = number of distinct commits that touched each file.
-- Churn = lines added + deleted over git history.
-- This is a maintenance/change-frequency proxy signal.
-
-### Notes
-
-- This PoC uses a file-level import graph.
-- Fan-in = number of distinct entrypoint files that can reach a module through import edges.
-- `codeql` engine uses CodeQL import resolution from a CodeQL database.
-- `heuristic` engine is a regex-parser fallback.
-- Source scanning supports JS/TS, Python, and PHP (`.php`, `.phtml`).
-- If `codeql` is requested for a non-JS/TS project, fan-in auto-falls back to `heuristic`.
+- `skills-lock.json` is local agent-skill metadata, not part of the core pipeline.
+- `docs/assets/` contains supporting diagrams for architecture discussions.
+- `Makefile` is a legacy convenience wrapper; the supported interface is the `riskrank` CLI.

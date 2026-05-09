@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'experiment/frontend/**'
       - 'experiment/**'
       - '.github/workflows/experiment-scan.yml'
 
@@ -80,12 +81,9 @@ jobs:
       - name: Determine scan targets
         id: targets
         run: |
-          # Get changed files in this PR
+          # Keep PR number for artifact naming and PR comment updates
           PR_NUMBER=${{ github.event.pull_request.number }}
           echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-
-          # Build the PR URL for --pr-url flag
-          echo "pr_url=${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUMBER}" >> $GITHUB_OUTPUT
 
       - name: Run full pipeline
         id: pipeline
@@ -106,11 +104,11 @@ jobs:
             echo "::warning::Neither CodeQL nor Bearer available — using heuristic fallback"
           fi
 
-          # Run from repo root so PR file paths (relative to repo root) resolve correctly.
-          # PR files from gh api are like "experiment/run_pipeline.py" — relative to repo root.
-          python3 experiment/run_pipeline.py "experiment" \
+          # Run full-project scan on frontend for richer git-history and vulnerability context.
+          python3 experiment/run_pipeline.py "experiment/frontend" \
             --fanin-engine "${FANIN_ENGINE}" \
             --vuln-engine "${VULN_ENGINE}" \
+            --fallback-heuristic-on-empty \
             --entry-prefix "server/api" \
             --entry-prefix "src/api" \
             --entry-prefix "app/api" \
@@ -118,8 +116,6 @@ jobs:
             --vuln-top 20 \
             --llm-max-files 50 \
             --llm-max-chars 3000 \
-            --pr-url "${{ steps.targets.outputs.pr_url }}" \
-            --pr-context-files 30 \
             --output-dir "experiment/runs/pr-${{ steps.targets.outputs.pr_number }}" \
             2>&1 | tee experiment/pipeline-output.txt
 

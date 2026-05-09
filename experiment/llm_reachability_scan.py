@@ -21,6 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from riskrank_cli.paths import (
+    default_credentials_file,
+    default_env_file,
+    default_prompt_file,
+)
+
 try:
     from openai import OpenAI
 except ImportError as exc:
@@ -33,7 +39,7 @@ SOURCE_EXTS = {".ts", ".js", ".tsx", ".jsx", ".py", ".vue", ".php", ".phtml"}
 DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_FALLBACK_CHAT_MODEL = "gpt-4.1-mini"
-DEFAULT_AUTH_FILE = Path(__file__).resolve().parent / "credentials.json"
+DEFAULT_AUTH_FILE = default_credentials_file()
 
 SKIP_DIRS = {
     ".git",
@@ -85,11 +91,41 @@ def _should_skip(path: Path) -> bool:
     return any(part in SKIP_DIRS for part in path.parts)
 
 
-def collect_source_files(root: Path) -> List[Path]:
+def normalize_rel_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def load_exclude_prefixes(prefixes: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for prefix in prefixes:
+        normalized = normalize_rel_path(prefix).rstrip("/")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def is_excluded_rel(rel_path: str, exclude_prefixes: List[str]) -> bool:
+    if not exclude_prefixes:
+        return False
+    normalized = normalize_rel_path(rel_path)
+    return any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in exclude_prefixes
+    )
+
+
+def collect_source_files(root: Path, exclude_prefixes: Optional[List[str]] = None) -> List[Path]:
     files: List[Path] = []
     for p in sorted(root.rglob("*")):
-        if p.is_file() and p.suffix in SOURCE_EXTS and not _should_skip(p):
-            files.append(p)
+        if not (p.is_file() and p.suffix in SOURCE_EXTS and not _should_skip(p)):
+            continue
+        rel = p.relative_to(root).as_posix()
+        if exclude_prefixes and is_excluded_rel(rel, exclude_prefixes):
+            continue
+        files.append(p)
     return files
 
 
@@ -129,6 +165,23 @@ def fetch_pr_files(pr_url: str) -> List[str]:
 
     files = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
     return sorted(set(files))
+
+
+def load_candidate_paths(path: Optional[str]) -> Optional[List[str]]:
+    if not path:
+        return None
+    candidate_file = Path(path).expanduser().resolve()
+    if not candidate_file.exists() or not candidate_file.is_file():
+        raise SystemExit(f"Candidate files list not found: {candidate_file}")
+    rows: List[str] = []
+    seen: set[str] = set()
+    for line in candidate_file.read_text(encoding="utf-8").splitlines():
+        normalized = line.strip().replace("\\", "/").lstrip("./")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        rows.append(normalized)
+    return rows
 
 
 def prepare_temp_clone_for_pr(
@@ -369,6 +422,9 @@ def build_user_payload(
     git_summary: Optional[dict],
     vulnerability_summary: Optional[dict],
 ) -> dict:
+    task = "estimate contextual code reachability importance"
+    if candidate_files is not None:
+        task = "prioritize vulnerability-backed candidate files by contextual reachability importance"
     return {
         "project": {
             "name": project_root.name,
@@ -376,7 +432,7 @@ def build_user_payload(
             "language_hint": "mixed",
         },
         "request": {
-            "task": "estimate contextual code reachability importance",
+            "task": task,
             "model_requested": model_name,
             "analysis_scope": analysis_scope,
             "must_return": "strict json matching PROMPT.md schema",
@@ -421,6 +477,7 @@ def tool_list_files(
     recursive: bool,
     include_glob: str,
     max_entries: int,
+    exclude_prefixes: Optional[List[str]] = None,
 ) -> dict:
     resolved = _safe_resolve(project_root, path)
     if not resolved or not resolved.exists() or not resolved.is_dir():
@@ -432,6 +489,8 @@ def tool_list_files(
         if _should_skip(p):
             continue
         rel = p.relative_to(project_root).as_posix()
+        if exclude_prefixes and is_excluded_rel(rel, exclude_prefixes):
+            continue
         name = p.name + ("/" if p.is_dir() else "")
         if not fnmatch.fnmatch(name, include_glob) and not fnmatch.fnmatch(
             rel, include_glob
@@ -444,11 +503,18 @@ def tool_list_files(
 
 
 def tool_read_file(
-    project_root: Path, path: str, start_line: int, max_lines: int
+    project_root: Path,
+    path: str,
+    start_line: int,
+    max_lines: int,
+    exclude_prefixes: Optional[List[str]] = None,
 ) -> dict:
     resolved = _safe_resolve(project_root, path)
     if not resolved or not resolved.exists() or not resolved.is_file():
         return {"error": "invalid_file", "path": path}
+    rel = resolved.relative_to(project_root).as_posix()
+    if exclude_prefixes and is_excluded_rel(rel, exclude_prefixes):
+        return {"error": "excluded_file", "path": path}
 
     try:
         text = resolved.read_text(encoding="utf-8", errors="ignore")
@@ -472,6 +538,7 @@ def tool_search_code(
     pattern: str,
     include_glob: str,
     max_hits: int,
+    exclude_prefixes: Optional[List[str]] = None,
 ) -> dict:
     try:
         rx = re.compile(pattern)
@@ -479,7 +546,7 @@ def tool_search_code(
         return {"error": "invalid_regex", "message": str(exc), "pattern": pattern}
 
     hits: List[dict] = []
-    for p in collect_source_files(project_root):
+    for p in collect_source_files(project_root, exclude_prefixes=exclude_prefixes):
         rel = p.relative_to(project_root).as_posix()
         if include_glob and not fnmatch.fnmatch(rel, include_glob):
             continue
@@ -495,7 +562,9 @@ def tool_search_code(
     return {"pattern": pattern, "hits": hits}
 
 
-def execute_tool_call(project_root: Path, name: str, args: dict) -> dict:
+def execute_tool_call(
+    project_root: Path, name: str, args: dict, exclude_prefixes: Optional[List[str]] = None
+) -> dict:
     if name == "list_files":
         return tool_list_files(
             project_root=project_root,
@@ -503,6 +572,7 @@ def execute_tool_call(project_root: Path, name: str, args: dict) -> dict:
             recursive=bool(args.get("recursive", False)),
             include_glob=str(args.get("include_glob", "*")),
             max_entries=int(args.get("max_entries", 300)),
+            exclude_prefixes=exclude_prefixes,
         )
     if name == "read_file":
         return tool_read_file(
@@ -510,6 +580,7 @@ def execute_tool_call(project_root: Path, name: str, args: dict) -> dict:
             path=str(args.get("path", "")),
             start_line=int(args.get("start_line", 1)),
             max_lines=int(args.get("max_lines", 250)),
+            exclude_prefixes=exclude_prefixes,
         )
     if name == "search_code":
         return tool_search_code(
@@ -517,6 +588,7 @@ def execute_tool_call(project_root: Path, name: str, args: dict) -> dict:
             pattern=str(args.get("pattern", "")),
             include_glob=str(args.get("include_glob", "*.ts")),
             max_hits=int(args.get("max_hits", 200)),
+            exclude_prefixes=exclude_prefixes,
         )
     return {"error": "unknown_tool", "tool": name}
 
@@ -535,7 +607,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt-file",
-        default=str(Path(__file__).resolve().parent / "PROMPT.md"),
+        default=str(default_prompt_file()),
         help="Prompt instruction markdown file",
     )
     parser.add_argument(
@@ -571,7 +643,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--env-file",
-        default=str(Path(__file__).resolve().parent / ".env"),
+        default=str(default_env_file()),
         help="Optional .env file to load before reading API key",
     )
     parser.add_argument(
@@ -644,10 +716,21 @@ def parse_args() -> argparse.Namespace:
         help="GitHub PR URL. If set, rank PR files only while keeping project context.",
     )
     parser.add_argument(
+        "--candidate-files",
+        default=None,
+        help="Optional newline-delimited allowlist of project-relative candidate files",
+    )
+    parser.add_argument(
+        "--exclude-prefix",
+        action="append",
+        default=[],
+        help="Optional project-relative path prefix to exclude from analysis. Can repeat.",
+    )
+    parser.add_argument(
         "--pr-context-files",
         type=int,
         default=30,
-        help="Additional non-PR files to include as context when --pr-url is set",
+        help="Additional non-candidate context files to include when candidate or PR scoping is active",
     )
     parser.add_argument(
         "--fallback-chat-model",
@@ -728,13 +811,47 @@ def main() -> int:
             raise SystemExit(f"Prompt file not found: {prompt_file}")
         prompt_instructions = prompt_file.read_text(encoding="utf-8")
 
-        all_files = collect_source_files(project_root)
+        exclude_prefixes = load_exclude_prefixes(args.exclude_prefix)
+        all_files = collect_source_files(project_root, exclude_prefixes=exclude_prefixes)
         candidate_files: Optional[List[Path]] = None
         selected_files: List[Path]
         analysis_scope = "project"
         pr_files_from_url: Optional[List[str]] = None
 
-        if args.pr_url:
+        candidate_paths_from_file = load_candidate_paths(args.candidate_files)
+
+        if candidate_paths_from_file is not None:
+            file_by_rel = {
+                f.relative_to(project_root).as_posix(): f for f in all_files
+            }
+            candidate_files = [
+                file_by_rel[path]
+                for path in candidate_paths_from_file
+                if path in file_by_rel
+            ]
+            if args.max_files > 0:
+                candidate_files = candidate_files[: args.max_files]
+            if not candidate_files:
+                raise SystemExit(
+                    "Candidate file list does not contain any source files present under the local checkout."
+                )
+            selected_files = list(candidate_files)
+            if args.pr_context_files > 0:
+                context_files = select_focus_files(
+                    project_root, all_files, max_files=args.pr_context_files
+                )
+                candidate_set = set(candidate_files)
+                for p in context_files:
+                    if p in candidate_set:
+                        continue
+                    selected_files.append(p)
+                    if len(selected_files) >= len(candidate_files) + args.pr_context_files:
+                        break
+            analysis_scope = "candidate_only"
+            if args.pr_url:
+                analysis_scope = "pr_candidate_only"
+
+        elif args.pr_url:
             analysis_scope = "pr_only"
             pr_files_from_url = fetch_pr_files(str(args.pr_url))
 
@@ -1140,7 +1257,12 @@ def main() -> int:
                         tool_args = json.loads(getattr(fn, "arguments", "{}") or "{}")
                     except json.JSONDecodeError:
                         tool_args = {}
-                    result = execute_tool_call(project_root, name, tool_args)
+                    result = execute_tool_call(
+                        project_root,
+                        name,
+                        tool_args,
+                        exclude_prefixes=exclude_prefixes,
+                    )
                     messages.append(
                         {
                             "role": "tool",
@@ -1240,6 +1362,7 @@ def main() -> int:
                 else None
             ),
             "candidate_files_count": len(candidate_files) if candidate_files else None,
+            "exclude_prefixes": exclude_prefixes,
             "pr_context_files": args.pr_context_files if args.pr_url else None,
             "provider": selected_provider,
             "model": active_model,

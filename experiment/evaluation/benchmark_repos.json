@@ -1,0 +1,37 @@
+[
+  {
+    "name": "NodeGoat",
+    "slug": "nodegoat",
+    "url": "https://github.com/OWASP/NodeGoat.git",
+    "language": "javascript",
+    "entry_prefixes": ["app/routes", "routes"]
+  },
+  {
+    "name": "DVNA",
+    "slug": "dvna",
+    "url": "https://github.com/appsecco/dvna.git",
+    "language": "javascript",
+    "entry_prefixes": ["routes", "server", "api"]
+  },
+  {
+    "name": "DVWA",
+    "slug": "dvwa",
+    "url": "https://github.com/digininja/DVWA.git",
+    "language": "php",
+    "entry_prefixes": ["vulnerabilities", "login.php"]
+  },
+  {
+    "name": "XVWA",
+    "slug": "xvwa",
+    "url": "https://github.com/s4n7h0/xvwa.git",
+    "language": "php",
+    "entry_prefixes": ["xvwa", "php"]
+  },
+  {
+    "name": "Juice Shop",
+    "slug": "juice-shop",
+    "url": "https://github.com/juice-shop/juice-shop.git",
+    "language": "typescript",
+    "entry_prefixes": ["routes", "server", "api", "frontend/src"]
+  }
+]
